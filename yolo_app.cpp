@@ -81,9 +81,16 @@ void get_other_config(YoloConfig *config, int *seed) {
     if (config->quality == -1)
         prompt_for_value("Enter quality (0-31): ", config->quality);
 
-    if (config->video_output_extension == "mkv") { // Not set by user arg
-        std::cout << "Enter video output extension (e.g., mkv, mp4): ";
-        std::cin >> config->video_output_extension;
+    // Check if there are any video files before asking for video-specific options.
+    bool has_video_files = false;
+    for (const auto& file : config->input_files) {
+        if (is_video_file(file)) {
+            has_video_files = true;
+            break;
+        }
+    }
+    if (has_video_files && config->video_output_extension == "mkv") { // Not set by user arg
+        prompt_for_value("Enter video output extension (e.g., mkv, mp4): ", config->video_output_extension);
     }
     if (config->audio_output_extension == "mp3") { // Not set by user arg
         std::cout << "Enter audio output extension (e.g., mp3, ogg): ";
