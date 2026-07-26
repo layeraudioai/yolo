@@ -398,6 +398,9 @@ void run_yolo_process(YoloConfig *config, int seed) {
             }
 
             cmd_str += " -y \"";
+            if (!config->hyper_file_name.empty()) {
+                cmd_str += config->hyper_file_name + " \"";
+            } 
             cmd_str += output_filename;
             cmd_str += "\"";
 
@@ -477,15 +480,18 @@ void run_yolo_process(YoloConfig *config, int seed) {
                         audio_codec_str = " -q:a " + std::to_string(config->quality); // Use quality for stereo/mono
                     }
 
-                    std::cout << config->create_hyper_file;
-                    if (config->create_hyper_file=='y') { cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
+                    if (config->create_hyper_file=='y') { 
+                        std::cout << "Using: " << config->hyper_file_name << std::endl;
+                        cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
                               " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                               " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
                               cmd_str += " -q:v " + std::to_string(config->quality) +
                               audio_codec_str +
                               " -ac " + std::to_string(config->num_audio_channels) +
                               " -y \"" + output_filename + "\" \"" + config->hyper_file_name + "\""; }
-                    else { cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
+                    else { 
+                        std::cout << "Using: " << config->hyper_file_name << std::endl;
+                        cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
                               " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                               " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
                               cmd_str += " -q:v " + std::to_string(config->quality) +
@@ -509,7 +515,6 @@ void run_yolo_process(YoloConfig *config, int seed) {
                         audio_opts_str = " -q:a " + std::to_string(config->quality) +
                                          " -ac " + std::to_string(config->num_audio_channels);
                     }
-                    std::cout << config->create_hyper_file;
                     if (config->create_hyper_file=='y') { cmd_str = std::string(FFMPEG_PATH) + " -i \"" + 
                               config->input_files[i] + "\"" + " -af \"" + 
                               std::string(filter_complex_a) + "\"" + audio_opts_str + " -y \"" + output_filename + 
