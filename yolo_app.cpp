@@ -262,7 +262,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                           " -q:v " + std::to_string(config->quality) +
                           audio_codec_str +
                           " -ac " + std::to_string(config->num_audio_channels) +
-                          " -y \"" + output_filename + "\" " + config->hyper_filename;;
+                          " -y \"" + output_filename + "\" \"" + config->hyper_filename + "\"";
             } else { // Audio-only file
                 std::string audio_opts_str;
                 if (config->audio_output_extension == "mp3") {
@@ -283,7 +283,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
                 cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
                           " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
-                          audio_opts_str + " -y \"" + output_filename + "\"";
+                          audio_opts_str + " -y \"" + output_filename + "\" \"" + config->hyper_filename + "\"";
             }
 
             log_current_time(log_file);
