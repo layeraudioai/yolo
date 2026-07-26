@@ -76,7 +76,7 @@ void get_other_config(YoloConfig *config, int *seed) {
     if (config->tempo_modifier == -1.0f)
         prompt_for_value("Enter tempo modifier: ", config->tempo_modifier);
     if (config->quality == -1)
-        prompt_for_value("Enter quality (0-31): ", config->quality);
+        prompt_for_value("Enter quality (0[max]-31[lowest]): ", config->quality);
     if (config->num_audio_channels == -1)
         prompt_for_value("Enter number of output audio channels: ", config->num_audio_channels);
 
@@ -272,6 +272,9 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 } else if (config->audio_output_extension == "wav") {
                     // For WAV, use uncompressed PCM to support high channel counts.
                     audio_opts_str = " -c:a pcm_s24le -ac " + std::to_string(config->num_audio_channels);
+                } else if (config->audio_output_extension == "opus"){
+                    audio_opts_str = " -ab " + std::to_string((256 * config->num_audio_channels) - (8 * config->quality)) +
+                                     " -ac " + std::to_string(config->num_audio_channels);
                 } else {
                     // Default behavior for other formats (ogg, flac, etc.)
                     audio_opts_str = " -q:a " + std::to_string(config->quality) +
