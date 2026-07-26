@@ -168,21 +168,6 @@ std::string get_basename(const std::string& path) {
 
 
 void run_yolo_process(YoloConfig *config, int seed) {
-    if (seed == 0) {
-        srand((unsigned int)time(NULL));
-    } else {
-        srand(seed);
-    }
-    
-    config->brightness = config->brightnessTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
-    config->contrast = config->contrastTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
-    config->saturation = config->saturationTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
-    config->volume = config->volume_lufs + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
-    config->treble = config->treble_gain + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
-    config->bass = config->bass_boost + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
-    config->atempo = config->tempo_modifier + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
-    config->vtempo = 1.0 / config->atempo;
-
 
     FILE *log_file = fopen("yolo.log", "a");
     if (!log_file) {
@@ -199,6 +184,24 @@ void run_yolo_process(YoloConfig *config, int seed) {
     int process_count = 0;
 
     for (int run = 0; run < config->num_runs; run++) {
+        // Re-seed the RNG for each run to get different random values.
+        // Using seed + run makes the results for each run deterministic and reproducible.
+        unsigned int current_seed = (seed == 0) ? (unsigned int)time(NULL) + run : seed + run;
+        srand(current_seed);
+
+        // Recalculate randomized parameters for each run
+        config->brightness = config->brightnessTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
+        config->contrast = config->contrastTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
+        config->saturation = config->saturationTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
+        config->volume = config->volume_lufs + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
+        config->treble = config->treble_gain + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
+        config->bass = config->bass_boost + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
+        config->atempo = config->tempo_modifier + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
+        config->vtempo = 1.0 / config->atempo;
+
+        log_current_time(log_file);
+        fprintf(log_file, "Starting Run %d with Seed %u\n", run, current_seed);
+
         for (size_t i = 0; i < config->input_files.size(); i++) {
             bool is_video = is_video_file(config->input_files[i]);
             const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
@@ -208,7 +211,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
             snprintf(output_filename, sizeof(output_filename), "%s_run%d_file%zu.%s",
                      base_filename.c_str(), run, i, output_ext.c_str());
 
-            char filter_complex_a[1024];
+            char filter_complex_a[4096];
             char filter_complex_v[512];
             std::string pan_filter = get_pan_filter_string(config->num_audio_channels);
             snprintf(filter_complex_a, sizeof(filter_complex_a),
