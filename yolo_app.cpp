@@ -303,7 +303,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
         log_current_time(log_file);
         fprintf(log_file, "Starting Run %d with Seed %u\n", run, current_seed);
 
-        if (config->layer_files) {
+        if (config->layer_files=='y') {
             // --- Layered files logic ---
             // A single ffmpeg command per run, with all files as inputs.
 
@@ -477,6 +477,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                         audio_codec_str = " -q:a " + std::to_string(config->quality); // Use quality for stereo/mono
                     }
 
+                    std::cout << config->create_hyper_file;
                     if (config->create_hyper_file=='y') { cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
                               " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                               " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
@@ -508,7 +509,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                         audio_opts_str = " -q:a " + std::to_string(config->quality) +
                                          " -ac " + std::to_string(config->num_audio_channels);
                     }
-
+                    std::cout << config->create_hyper_file;
                     if (config->create_hyper_file=='y') { cmd_str = std::string(FFMPEG_PATH) + " -i \"" + 
                               config->input_files[i] + "\"" + " -af \"" + 
                               std::string(filter_complex_a) + "\"" + audio_opts_str + " -y \"" + output_filename + 
@@ -565,12 +566,12 @@ void run_yolo_process(YoloConfig *config, int seed) {
 #endif
     }
     
-    if (config->create_hyper_file) {
+    if (config->create_hyper_file=='y') {
         FILE *list = fopen("list.txt", "w");
         if (list) {
             for (int run = config->runNumber; run < config->num_runs+config->runNumber; run++) {
                 for (size_t i = 0; i < config->input_files.size(); i++) {
-                    if (config->layer_files) {
+                    if (config->layer_files=='y') {
                         bool has_video = is_video_file(config->input_files[0]); // Simplified check, assumes homogeneity or first file is representative
                         const std::string& output_ext = has_video ? config->video_output_extension : config->audio_output_extension;
                         fprintf(list, "file 'layered_output_run%d.%s'\n", run, output_ext.c_str());
@@ -671,12 +672,12 @@ ___.__. ____ |  |   ____
             print_help(argv[0]);
             return 0;
         } else if (arg == "--layer-files") {
-            config.layer_files = true;
+            config.layer_files = 'y';
         } else if (arg == "--create-hyper-file") {
-            config.create_hyper_file = true;
+            config.create_hyper_file = 'y';
         } else if ((arg == "--hyper-filename" || arg == "--hyper") && i + 1 < argc) {
             config.hyper_file_name = argv[++i];
-            config.create_hyper_file = true;
+            config.create_hyper_file = 'y';
         } else if ((arg == "-bt" || arg == "--brightness-target") && i + 1 < argc) {
             config.brightnessTarget = std::stof(argv[++i]);
         } else if ((arg == "-ct" || arg == "--contrast-target") && i + 1 < argc) {
