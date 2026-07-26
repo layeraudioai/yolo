@@ -1,4 +1,4 @@
 # yolo
 media randomizer
 
-alpha 1 of the c++ port, untested
+alpha 2 of the c++ port, untested
