@@ -1,3 +1,3 @@
 # yolo
 media randomizer
-release 4.20
+release 6.66
