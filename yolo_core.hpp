@@ -24,7 +24,7 @@ struct YoloConfig {
     YoloConfig() :
         layer_files('-'),
         create_hyper_file('-'),
-        hyper_file_name("-"),
+        hyper_file_name(),
         bass_boost(-1.0f),
         treble_gain(-1.0f),
         volume_lufs(-1.0f),
