@@ -22,7 +22,9 @@ typedef pid_t ProcessHandle;
 
 struct YoloConfig {
     YoloConfig() :
-        create_hyper_file(false),
+        layer_files('-'),
+        create_hyper_file('-'),
+        hyper_file_name("-"),
         bass_boost(-1.0f),
         treble_gain(-1.0f),
         volume_lufs(-1.0f),
@@ -47,8 +49,9 @@ struct YoloConfig {
     {}
 
     std::vector<std::string> input_files;
-    bool create_hyper_file;
-    std::string hyper_filename;
+    char layer_files;
+    char create_hyper_file;
+    std::string hyper_file_name;
     float bass_boost;
     float treble_gain;
     float volume_lufs;
@@ -74,3 +77,11 @@ struct YoloConfig {
 
 void get_other_config(YoloConfig *config, int *seed);
 void run_yolo_process(YoloConfig *config, int seed);
+std::string get_pan_filter_string(int num_input_channels, int num_output_channels);
+std::vector<char*> get_argv(const std::string& cmd, std::vector<std::string>& storage);
+void log_current_time(FILE *f) ;
+bool is_video_file(const std::string& filename);
+int get_audio_channel_count(const std::string& filename, FILE* log_file);
+std::string get_basename(const std::string& path);
+void print_help(const char* app_name);
+template<typename T> void prompt_for_value (const std::string& prompt, T& value);
