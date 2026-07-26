@@ -14,13 +14,20 @@ std::string get_pan_filter_string(int num_channels) {
     } else {
         std::string layout = std::to_string(num_channels);
         if (num_channels == 2) layout = "stereo";
+        else if (num_channels == 6) layout = "5.1";
+        else if (num_channels == 8) layout = "7.1";
+        else if (num_channels == 16) layout = "hexadecagonal";
+        else if (num_channels == 24) layout = "22.2";
+        else layout = std::to_string(num_channels);
         pan_str += layout;
         for (int i = 0; i < num_channels; ++i) {
             pan_str += "|c" + std::to_string(i) + "=";
             for (int j = 0; j < num_channels; ++j) {
-                if (rand() % 3 == 0) continue; 
-                if (j > 0) pan_str += (rand() % 2 == 0 ? "+" : "-");
-                pan_str += "c" + std::to_string(j);
+                // Mix from other channels to the current channel 'i'
+                if (rand() % 2 == 0) { // Randomly decide to mix from channel j
+                    if (pan_str.back() != '=') pan_str += "+";
+                    pan_str += "c" + std::to_string(j);
+                }
             }
         }
     }
@@ -141,6 +148,11 @@ bool is_video_file(const std::string& filename) {
     return false;
 }
 
+#ifdef _WIN32
+// Define the path to ffmpeg.exe. This is more robust than relying on PATH.
+const char* FFMPEG_PATH = "ffmpeg.exe";
+#endif
+
 void run_yolo_process(YoloConfig *config, int seed) {
     if (seed == 0) {
         srand((unsigned int)time(NULL));
@@ -200,7 +212,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                          config->contrast,
                          config->saturation);
 
-                cmd_str = "ffmpeg -i \"" + config->input_files[i] + "\"" +
+                cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
                           " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                           " -filter_complex:v \"" + std::string(filter_complex_v) + "\"" +
                           " -q:v " + std::to_string(config->quality) +
@@ -208,20 +220,15 @@ void run_yolo_process(YoloConfig *config, int seed) {
                           " -ac " + std::to_string(config->num_audio_channels) +
                           " -y \"" + output_filename + "\"";
             } else { // Audio-only file
-                cmd_str = "ffmpeg -i \"" + config->input_files[i] + "\"" +
+                cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
                           " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                           " -q:a " + std::to_string(config->quality) +
                           " -ac " + std::to_string(config->num_audio_channels) +
                           " -y \"" + output_filename + "\"";
             }
 
-            // CreateProcess may modify the command line string, so we need a mutable buffer.
-            std::vector<char> cmd_line(cmd_str.begin(), cmd_str.end());
-            cmd_line.push_back('\0');
-
             log_current_time(log_file);
-            fprintf(log_file, "Run %d: Launching ffmpeg for input: '%s'\n", run, config->input_files[i].c_str());
-            fprintf(log_file, "  Command: %s\n", cmd_line.data());
+            fprintf(log_file, "Run %d: Launching ffmpeg for input: '%s'\n", run, config->input_files[i].c_str());            fprintf(log_file, "  Command: %s\n", cmd_str.c_str());
             fflush(log_file);
 
 #ifdef _WIN32
@@ -231,6 +238,10 @@ void run_yolo_process(YoloConfig *config, int seed) {
             si.cb = sizeof(si);
             ZeroMemory(&pi, sizeof(pi));
 
+            // CreateProcess may modify the command line string, so we need a mutable buffer.
+            std::vector<char> cmd_line(cmd_str.begin(), cmd_str.end());
+            cmd_line.push_back('\0');
+
             if (CreateProcess(NULL, cmd_line.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
                 processes[process_count++] = pi.hProcess;
                 CloseHandle(pi.hThread);
@@ -238,9 +249,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 fprintf(log_file, "  CreateProcess failed (%ld).\n", GetLastError());
             }
 #else // POSIX fork/exec
-            pid_t pid = fork();
-            if (pid == 0) { // Child process
-                // The shell will handle parsing the quoted arguments correctly.
+            pid_t pid = fork();            if (pid == 0) { // Child process
                 execl("/bin/sh", "sh", "-c", cmd_str.c_str(), (char *) NULL);
                 // If execl returns, it must have failed.
                 perror("execl failed");
@@ -278,15 +287,12 @@ void run_yolo_process(YoloConfig *config, int seed) {
             fclose(list);
         }
         
-        std::string concat_cmd_str = std::string("ffmpeg -f concat -safe 0 -i list.txt -c copy \"") + config->hyper_filename + "\"";
+        std::string concat_cmd_str = std::string(FFMPEG_PATH) + " -f concat -safe 0 -i list.txt -c copy \"" + config->hyper_filename + "\"";
 
-        std::vector<char> cmd_line(concat_cmd_str.begin(), concat_cmd_str.end());
-        cmd_line.push_back('\0');
-
-        if (!cmd_line.empty()) {
+        if (!config->hyper_filename.empty()) {
             log_current_time(log_file);
             fprintf(log_file, "Launching ffmpeg concatenation.\n");
-            fprintf(log_file, "  Command: %s\n", cmd_line.data());
+            fprintf(log_file, "  Command: %s\n", concat_cmd_str.c_str());
             fflush(log_file);
 
 #ifdef _WIN32
@@ -296,14 +302,16 @@ void run_yolo_process(YoloConfig *config, int seed) {
             si.cb = sizeof(si);
             ZeroMemory(&pi, sizeof(pi));
             
-            if (CreateProcess(NULL, cmd_line.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            std::vector<char> concat_cmd_line(concat_cmd_str.begin(), concat_cmd_str.end());
+            concat_cmd_line.push_back('\0');
+
+            if (CreateProcess(NULL, concat_cmd_line.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
                 WaitForSingleObject(pi.hProcess, INFINITE);
                 CloseHandle(pi.hProcess);
                 CloseHandle(pi.hThread);
             }
 #else // POSIX fork/exec
-            pid_t pid = fork();
-            if (pid == 0) { // Child
+            pid_t pid = fork();            if (pid == 0) { // Child
                 execl("/bin/sh", "sh", "-c", concat_cmd_str.c_str(), (char *) NULL);
                 perror("execl failed");
                 exit(1);
