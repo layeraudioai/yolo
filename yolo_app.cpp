@@ -2,6 +2,7 @@
 #include <sstream>
 #include <iterator>
 #include <iomanip>
+#include <algorithm>
 #define MAX_PROCESSES (MAX_FILES * 10)
 
 void get_other_config(YoloConfig *config, int *seed) {
@@ -46,11 +47,6 @@ void get_other_config(YoloConfig *config, int *seed) {
         prompt_for_value("Enter tempo modifier: ", config->tempo_modifier);
     if (config->quality == -1)
         prompt_for_value("Enter quality (0-31): ", config->quality);
-
-    if (config->output_extension.empty()) {
-        std::cout << "Enter output extension (e.g., mp4): ";
-        std::cin >> config->output_extension;
-    }
 
     if (config->num_runs == -1)
         prompt_for_value("Enter number of runs: ", config->num_runs);
@@ -115,6 +111,15 @@ bool is_video_file(const std::string& filename) {
     return false;
 }
 
+// Determines the appropriate output extension based on the file type.
+std::string get_output_extension(bool is_video) {
+    if (is_video) {
+        return "mkv"; // Use a flexible video container
+    } else {
+        return "mp3"; // Use a common audio container
+    }
+}
+
 void run_yolo_process(YoloConfig *config, int seed) {
     if (seed == 0) {
         srand((unsigned int)time(NULL));
@@ -148,9 +153,11 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
     for (int run = 0; run < config->num_runs; run++) {
         for (size_t i = 0; i < config->input_files.size(); i++) {
+            bool is_video = is_video_file(config->input_files[i]);
+            std::string output_ext = get_output_extension(is_video);
             char output_filename[512];
             snprintf(output_filename, sizeof(output_filename), "%.200s_run%d_file%zu.%s",
-                     config->input_files[i].c_str(), run, i, config->output_extension.c_str());
+                     config->input_files[i].c_str(), run, i, output_ext.c_str());
 
             char filter_complex_a[512];
             char filter_complex_v[512];
@@ -162,7 +169,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 config->treble);
 
             std::string cmd_str;
-            if (is_video_file(config->input_files[i])) {
+            if (is_video) {
                 snprintf(filter_complex_v, sizeof(filter_complex_v),
                          "setpts=%.6f*PTS,eq=brightness=%.6f:contrast=%.6f:saturation=%.6f",
                          config->vtempo,
@@ -239,8 +246,10 @@ void run_yolo_process(YoloConfig *config, int seed) {
         if (list) {
             for (int run = 0; run < config->num_runs; run++) {
                 for (size_t i = 0; i < config->input_files.size(); i++) {
+                    bool is_video = is_video_file(config->input_files[i]);
+                    std::string output_ext = get_output_extension(is_video);
                     fprintf(list, "file '%.200s_run%d_file%zu.%s'\n",
-                            config->input_files[i].c_str(), run, i, config->output_extension.c_str());
+                            config->input_files[i].c_str(), run, i, output_ext.c_str());
                 }
             }
             fclose(list);
@@ -301,7 +310,6 @@ void print_help(const char* app_name) {
     std::cout << "  -l, --lufs <f>                Set the target volume in LUFS (float).\n";
     std::cout << "  -t, --tempo <f>               Set the tempo modifier (float).\n";
     std::cout << "  -q, --quality <int>           Set the output quality (0-31).\n";
-    std::cout << "  -e, --ext <ext>               Set the output file extension (e.g., mp4).\n";
     std::cout << "  -r, --runs <int>              Set the number of processing runs.\n";
     std::cout << "  -c, --channels <int>          Set the number of output audio channels.\n";
     std::cout << "  -s, --seed <int>              Set the random seed (0 for random).\n";
@@ -339,8 +347,6 @@ int main(int argc, char *argv[]) {
             config.tempo_modifier = std::stof(argv[++i]);
         } else if ((arg == "-q" || arg == "--quality") && i + 1 < argc) {
             config.quality = std::stoi(argv[++i]);
-        } else if ((arg == "-e" || arg == "--ext") && i + 1 < argc) {
-            config.output_extension = argv[++i];
         } else if ((arg == "-r" || arg == "--runs") && i + 1 < argc) {
             config.num_runs = std::stoi(argv[++i]);
         } else if ((arg == "-c" || arg == "--channels") && i + 1 < argc) {

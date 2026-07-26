@@ -62,7 +62,6 @@ struct YoloConfig {
     float bass;
     float treble;
     int quality;
-    std::string output_extension;
     int num_runs;
     int num_audio_channels;
 };
