@@ -119,17 +119,6 @@ bool is_video_file(const std::string& filename) {
     return false;
 }
 
-// Replaces single backslashes with double backslashes to prevent misinterpretation.
-void fix_path_slashes(std::string& path) {
-    std::string temp_path;
-    temp_path.reserve(path.length());
-    for (char c : path) {
-        if (c == '\\') temp_path += "\\\\";
-        else temp_path += c;
-    }
-    path = temp_path;
-}
-
 void run_yolo_process(YoloConfig *config, int seed) {
     if (seed == 0) {
         srand((unsigned int)time(NULL));
@@ -172,7 +161,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
             char filter_complex_a[512];
             char filter_complex_v[512];
             snprintf(filter_complex_a, sizeof(filter_complex_a),
-                "acopy,atempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f", 
+                "atempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f", 
                 config->atempo,
                 config->volume,
                 config->bass,
@@ -181,7 +170,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
             std::string cmd_str;
             if (is_video) {
                 snprintf(filter_complex_v, sizeof(filter_complex_v),
-                         "copy,setpts=%.6f*PTS,eq=brightness=%.6f:contrast=%.6f:saturation=%.6f",
+                         "setpts=%.6f*PTS,eq=brightness=%.6f:contrast=%.6f:saturation=%.6f",
                          config->vtempo,
                          config->brightness,
                          config->contrast,
@@ -372,9 +361,7 @@ int main(int argc, char *argv[]) {
         } else {
             // Treat as input file
             if (config.input_files.size() < MAX_FILES) {
-                std::string path = argv[i];
-                fix_path_slashes(path);
-                config.input_files.push_back(path);
+                config.input_files.push_back(argv[i]);
             } else {
                 std::cerr << "Warning: Maximum number of input files (" << MAX_FILES << ") reached. Ignoring '" << arg << "'." << std::endl;
             }
@@ -399,7 +386,6 @@ int main(int argc, char *argv[]) {
             std::string path;
             // Use std::quoted to correctly handle paths with spaces
             while (config.input_files.size() < MAX_FILES && (ss >> std::quoted(path))) {
-                fix_path_slashes(path);
                 config.input_files.push_back(path);
             }
             if (config.input_files.size() >= MAX_FILES) {

@@ -72,4 +72,3 @@ struct YoloConfig {
 
 void get_other_config(YoloConfig *config, int *seed);
 void run_yolo_process(YoloConfig *config, int seed);
-void fix_path_slashes(std::string& path);
