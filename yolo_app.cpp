@@ -48,6 +48,14 @@ void get_other_config(YoloConfig *config, int *seed) {
     if (config->quality == -1)
         prompt_for_value("Enter quality (0-31): ", config->quality);
 
+    if (config->video_output_extension == "mkv") { // Not set by user arg
+        std::cout << "Enter video output extension (e.g., mkv, mp4): ";
+        std::cin >> config->video_output_extension;
+    }
+    if (config->audio_output_extension == "mp3") { // Not set by user arg
+        std::cout << "Enter audio output extension (e.g., mp3, ogg): ";
+        std::cin >> config->audio_output_extension;
+    }
     if (config->num_runs == -1)
         prompt_for_value("Enter number of runs: ", config->num_runs);
     if (config->num_audio_channels == -1)
@@ -111,15 +119,6 @@ bool is_video_file(const std::string& filename) {
     return false;
 }
 
-// Determines the appropriate output extension based on the file type.
-std::string get_output_extension(bool is_video) {
-    if (is_video) {
-        return "mkv"; // Use a flexible video container
-    } else {
-        return "mp3"; // Use a common audio container
-    }
-}
-
 void run_yolo_process(YoloConfig *config, int seed) {
     if (seed == 0) {
         srand((unsigned int)time(NULL));
@@ -154,7 +153,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
     for (int run = 0; run < config->num_runs; run++) {
         for (size_t i = 0; i < config->input_files.size(); i++) {
             bool is_video = is_video_file(config->input_files[i]);
-            std::string output_ext = get_output_extension(is_video);
+            const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
             char output_filename[512];
             snprintf(output_filename, sizeof(output_filename), "%.200s_run%d_file%zu.%s",
                      config->input_files[i].c_str(), run, i, output_ext.c_str());
@@ -162,7 +161,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
             char filter_complex_a[512];
             char filter_complex_v[512];
             snprintf(filter_complex_a, sizeof(filter_complex_a),
-                "atempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f", 
+                "acopy,atempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f", 
                 config->atempo,
                 config->volume,
                 config->bass,
@@ -171,7 +170,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
             std::string cmd_str;
             if (is_video) {
                 snprintf(filter_complex_v, sizeof(filter_complex_v),
-                         "setpts=%.6f*PTS,eq=brightness=%.6f:contrast=%.6f:saturation=%.6f",
+                         "copy,setpts=%.6f*PTS,eq=brightness=%.6f:contrast=%.6f:saturation=%.6f",
                          config->vtempo,
                          config->brightness,
                          config->contrast,
@@ -247,7 +246,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
             for (int run = 0; run < config->num_runs; run++) {
                 for (size_t i = 0; i < config->input_files.size(); i++) {
                     bool is_video = is_video_file(config->input_files[i]);
-                    std::string output_ext = get_output_extension(is_video);
+                    const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
                     fprintf(list, "file '%.200s_run%d_file%zu.%s'\n",
                             config->input_files[i].c_str(), run, i, output_ext.c_str());
                 }
@@ -310,6 +309,8 @@ void print_help(const char* app_name) {
     std::cout << "  -l, --lufs <f>                Set the target volume in LUFS (float).\n";
     std::cout << "  -t, --tempo <f>               Set the tempo modifier (float).\n";
     std::cout << "  -q, --quality <int>           Set the output quality (0-31).\n";
+    std::cout << "  --video-ext <ext>           Set the output extension for video files (default: mkv).\n";
+    std::cout << "  --audio-ext <ext>           Set the output extension for audio files (default: mp3).\n";
     std::cout << "  -r, --runs <int>              Set the number of processing runs.\n";
     std::cout << "  -c, --channels <int>          Set the number of output audio channels.\n";
     std::cout << "  -s, --seed <int>              Set the random seed (0 for random).\n";
@@ -347,8 +348,10 @@ int main(int argc, char *argv[]) {
             config.tempo_modifier = std::stof(argv[++i]);
         } else if ((arg == "-q" || arg == "--quality") && i + 1 < argc) {
             config.quality = std::stoi(argv[++i]);
-        } else if ((arg == "-r" || arg == "--runs") && i + 1 < argc) {
-            config.num_runs = std::stoi(argv[++i]);
+        } else if (arg == "--video-ext" && i + 1 < argc) {
+            config.video_output_extension = argv[++i];
+        } else if (arg == "--audio-ext" && i + 1 < argc) {
+            config.audio_output_extension = argv[++i];
         } else if ((arg == "-c" || arg == "--channels") && i + 1 < argc) {
             config.num_audio_channels = std::stoi(argv[++i]);
         } else if ((arg == "-s" || arg == "--seed") && i + 1 < argc) {

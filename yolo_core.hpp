@@ -39,6 +39,8 @@ struct YoloConfig {
         bass(0.0f),
         treble(0.0f),
         quality(-1),
+        video_output_extension("mkv"),
+        audio_output_extension("mp3"),
         num_runs(-1),
         num_audio_channels(-1)
     {}
@@ -62,6 +64,8 @@ struct YoloConfig {
     float bass;
     float treble;
     int quality;
+    std::string video_output_extension;
+    std::string audio_output_extension;
     int num_runs;
     int num_audio_channels;
 };
