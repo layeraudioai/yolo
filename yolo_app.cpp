@@ -157,6 +157,16 @@ bool is_video_file(const std::string& filename) {
 const char* FFMPEG_PATH = "ffmpeg.exe";
 #endif
 
+// Helper to extract filename from a full path
+std::string get_basename(const std::string& path) {
+    size_t last_slash = path.find_last_of("/\\");
+    if (last_slash != std::string::npos) {
+        return path.substr(last_slash + 1);
+    }
+    return path;
+}
+
+
 void run_yolo_process(YoloConfig *config, int seed) {
     if (seed == 0) {
         srand((unsigned int)time(NULL));
@@ -192,10 +202,11 @@ void run_yolo_process(YoloConfig *config, int seed) {
         for (size_t i = 0; i < config->input_files.size(); i++) {
             bool is_video = is_video_file(config->input_files[i]);
             const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
+            std::string base_filename = get_basename(config->input_files[i]);
             char output_filename[512];
             // Pass the filename as an argument to snprintf to avoid format string vulnerabilities.
             snprintf(output_filename, sizeof(output_filename), "%s_run%d_file%zu.%s",
-                     config->input_files[i].c_str(), run, i, output_ext.c_str());
+                     base_filename.c_str(), run, i, output_ext.c_str());
 
             char filter_complex_a[1024];
             char filter_complex_v[512];
@@ -216,19 +227,42 @@ void run_yolo_process(YoloConfig *config, int seed) {
                          config->contrast,
                          config->saturation);
 
+                std::string audio_codec_str;
+                if (config->num_audio_channels > 2) {
+                    if (config->num_audio_channels <= 8) {
+                        audio_codec_str = " -c:a flac"; // Use FLAC for up to 7.1 surround
+                    } else {
+                        audio_codec_str = " -c:a pcm_s24le"; // Use PCM for high channel counts
+                    }
+                } else {
+                    audio_codec_str = " -q:a " + std::to_string(config->quality); // Use quality for stereo/mono
+                }
+
                 cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
                           " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                           " -filter_complex:v \"" + std::string(filter_complex_v) + "\"" +
                           " -q:v " + std::to_string(config->quality) +
-                          " -q:a " + std::to_string(config->quality) +
+                          audio_codec_str +
                           " -ac " + std::to_string(config->num_audio_channels) +
                           " -y \"" + output_filename + "\"";
             } else { // Audio-only file
+                std::string audio_opts_str;
+                if (config->audio_output_extension == "mp3") {
+                    // For MP3, use the user's channel count for the pan filter,
+                    // but force the final output to 2 channels.
+                    audio_opts_str = " -q:a " + std::to_string(config->quality) + " -ac 2";
+                } else if (config->audio_output_extension == "wav") {
+                    // For WAV, use uncompressed PCM to support high channel counts.
+                    audio_opts_str = " -c:a pcm_s24le -ac " + std::to_string(config->num_audio_channels);
+                } else {
+                    // Default behavior for other formats (ogg, flac, etc.)
+                    audio_opts_str = " -q:a " + std::to_string(config->quality) +
+                                     " -ac " + std::to_string(config->num_audio_channels);
+                }
+
                 cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
                           " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
-                          " -q:a " + std::to_string(config->quality) +
-                          " -ac " + std::to_string(config->num_audio_channels) +
-                          " -y \"" + output_filename + "\"";
+                          audio_opts_str + " -y \"" + output_filename + "\"";
             }
 
             log_current_time(log_file);
@@ -284,9 +318,10 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 for (size_t i = 0; i < config->input_files.size(); i++) {
                     bool is_video = is_video_file(config->input_files[i]);
                     const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
+                    std::string base_filename = get_basename(config->input_files[i]);
                     // Pass the filename as an argument to fprintf to avoid format string vulnerabilities.
                     fprintf(list, "file '%s_run%d_file%zu.%s'\n",
-                            config->input_files[i].c_str(), run, i, output_ext.c_str());
+                            base_filename.c_str(), run, i, output_ext.c_str());
                 }
             }
             fclose(list);
