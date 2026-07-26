@@ -6,6 +6,9 @@
 #include <iostream>
 #define MAX_PROCESSES (MAX_FILES * 10)
 
+// Forward declaration for the helper function
+bool is_video_file(const std::string& filename);
+
 std::string get_pan_filter_string(int num_channels) {
     if (num_channels <= 0) return "";
     std::string pan_str = "pan=";
