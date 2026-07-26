@@ -3,7 +3,29 @@
 #include <iterator>
 #include <iomanip>
 #include <algorithm>
+#include <iostream>
 #define MAX_PROCESSES (MAX_FILES * 10)
+
+std::string get_pan_filter_string(int num_channels) {
+    if (num_channels <= 0) return "";
+    std::string pan_str = "pan=";
+    if (num_channels == 1) {
+        pan_str += "mono|c0=c0";
+    } else {
+        std::string layout = std::to_string(num_channels);
+        if (num_channels == 2) layout = "stereo";
+        pan_str += layout;
+        for (int i = 0; i < num_channels; ++i) {
+            pan_str += "|c" + std::to_string(i) + "=";
+            for (int j = 0; j < num_channels; ++j) {
+                if (rand() % 3 == 0) continue; 
+                if (j > 0) pan_str += (rand() % 2 == 0 ? "+" : "-");
+                pan_str += "c" + std::to_string(j);
+            }
+        }
+    }
+    return pan_str;
+}
 
 void get_other_config(YoloConfig *config, int *seed) {
     char choice;
@@ -158,14 +180,16 @@ void run_yolo_process(YoloConfig *config, int seed) {
             snprintf(output_filename, sizeof(output_filename), "%.200s_run%d_file%zu.%s",
                      config->input_files[i].c_str(), run, i, output_ext.c_str());
 
-            char filter_complex_a[512];
+            char filter_complex_a[1024];
             char filter_complex_v[512];
+            std::string pan_filter = get_pan_filter_string(config->num_audio_channels);
             snprintf(filter_complex_a, sizeof(filter_complex_a),
-                "atempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f", 
+                "atempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f,%s",
                 config->atempo,
                 config->volume,
                 config->bass,
-                config->treble);
+                config->treble,
+                pan_filter.c_str());
 
             std::string cmd_str;
             if (is_video) {
