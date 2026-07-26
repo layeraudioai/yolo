@@ -1,3 +1,3 @@
 # yolo
 media randomizer
-release 7
+release 8
