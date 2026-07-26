@@ -41,6 +41,7 @@ struct YoloConfig {
         quality(-1),
         video_output_extension("mkv"),
         audio_output_extension("mp3"),
+        runNumber(1),
         num_runs(-1),
         num_audio_channels(-1)
     {}
@@ -66,6 +67,7 @@ struct YoloConfig {
     int quality;
     std::string video_output_extension;
     std::string audio_output_extension;
+    int runNumber;
     int num_runs;
     int num_audio_channels;
 };

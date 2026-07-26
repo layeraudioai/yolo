@@ -66,13 +66,7 @@ void get_other_config(YoloConfig *config, int *seed) {
             std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
         }
     };
-
-    if (config->brightnessTarget == -1.0f)
-        prompt_for_value("Enter brightness target: ", config->brightnessTarget);
-    if (config->contrastTarget == -1.0f)
-        prompt_for_value("Enter contrast target: ", config->contrastTarget);
-    if (config->saturationTarget == -1.0f)
-        prompt_for_value("Enter saturation target: ", config->saturationTarget);
+    std::cout << "Audio options:\n";
     if (config->bass_boost == -1.0f)
         prompt_for_value("Enter bass boost: ", config->bass_boost);
     if (config->treble_gain == -1.0f)
@@ -83,6 +77,8 @@ void get_other_config(YoloConfig *config, int *seed) {
         prompt_for_value("Enter tempo modifier: ", config->tempo_modifier);
     if (config->quality == -1)
         prompt_for_value("Enter quality (0-31): ", config->quality);
+    if (config->num_audio_channels == -1)
+        prompt_for_value("Enter number of output audio channels: ", config->num_audio_channels);
 
     // Check if there are any video files before asking for video-specific options.
     bool has_video_files = false;
@@ -93,6 +89,13 @@ void get_other_config(YoloConfig *config, int *seed) {
         }
     }
     if (has_video_files && config->video_output_extension == "mkv") { // Not set by user arg
+        std::cout << "Video specific options:\n";
+        if (config->brightnessTarget == -1.0f)
+            prompt_for_value("Enter brightness target: ", config->brightnessTarget);
+        if (config->contrastTarget == -1.0f)
+            prompt_for_value("Enter contrast target: ", config->contrastTarget);
+        if (config->saturationTarget == -1.0f)
+            prompt_for_value("Enter saturation target: ", config->saturationTarget);
         prompt_for_value("Enter video output extension (e.g., mkv, mp4): ", config->video_output_extension);
     }
     if (config->audio_output_extension == "mp3") { // Not set by user arg
@@ -101,10 +104,12 @@ void get_other_config(YoloConfig *config, int *seed) {
     }
     if (config->num_runs == -1)
         prompt_for_value("Enter number of runs: ", config->num_runs);
-    if (config->num_audio_channels == -1)
-        prompt_for_value("Enter number of output audio channels: ", config->num_audio_channels);
     if (*seed == 0)
         prompt_for_value("Enter random seed (0 for random): ", *seed);
+    if (*seed != 0)
+        prompt_for_value("Starting run number: ", config->runNumber);
+    else 
+        config->runNumber = 1;
 }
 
 void log_current_time(FILE *f) {
@@ -257,7 +262,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                           " -q:v " + std::to_string(config->quality) +
                           audio_codec_str +
                           " -ac " + std::to_string(config->num_audio_channels) +
-                          " -y \"" + output_filename + "\"";
+                          " -y \"" + output_filename + "\" " + config->hyper_filename;;
             } else { // Audio-only file
                 std::string audio_opts_str;
                 if (config->audio_output_extension == "mp3") {
@@ -327,7 +332,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
     if (config->create_hyper_file) {
         FILE *list = fopen("list.txt", "w");
         if (list) {
-            for (int run = 0; run < config->num_runs; run++) {
+            for (int run = config->runNumber; run < config->num_runs+config->runNumber; run++) {
                 for (size_t i = 0; i < config->input_files.size(); i++) {
                     bool is_video = is_video_file(config->input_files[i]);
                     const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
