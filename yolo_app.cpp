@@ -119,6 +119,17 @@ bool is_video_file(const std::string& filename) {
     return false;
 }
 
+// Replaces single backslashes with double backslashes to prevent misinterpretation.
+void fix_path_slashes(std::string& path) {
+    std::string temp_path;
+    temp_path.reserve(path.length());
+    for (char c : path) {
+        if (c == '\\') temp_path += "\\\\";
+        else temp_path += c;
+    }
+    path = temp_path;
+}
+
 void run_yolo_process(YoloConfig *config, int seed) {
     if (seed == 0) {
         srand((unsigned int)time(NULL));
@@ -361,7 +372,9 @@ int main(int argc, char *argv[]) {
         } else {
             // Treat as input file
             if (config.input_files.size() < MAX_FILES) {
-                config.input_files.push_back(argv[i]);
+                std::string path = argv[i];
+                fix_path_slashes(path);
+                config.input_files.push_back(path);
             } else {
                 std::cerr << "Warning: Maximum number of input files (" << MAX_FILES << ") reached. Ignoring '" << arg << "'." << std::endl;
             }
@@ -386,6 +399,7 @@ int main(int argc, char *argv[]) {
             std::string path;
             // Use std::quoted to correctly handle paths with spaces
             while (config.input_files.size() < MAX_FILES && (ss >> std::quoted(path))) {
+                fix_path_slashes(path);
                 config.input_files.push_back(path);
             }
             if (config.input_files.size() >= MAX_FILES) {
