@@ -396,13 +396,15 @@ int main(int argc, char *argv[]) {
     YoloConfig config;
     int seed = 0;
 
-    // Print the YOLO ASCII logo
-    std::cout << "██╗   ██╗ ██████╗ ██╗      ██████╗\n"
-                 "╚██╗ ██╔╝██╔═══██╗██║     ██╔═══██╗\n"
-                 " ╚████╔╝ ██║   ██║██║     ██║   ██║\n"
-                 "  ╚██╔╝  ██║   ██║██║     ██║   ██║\n"
-                 "   ██║   ╚██████╔╝███████╗╚██████╔╝\n"
-                 "   ╚═╝    ╚═════╝ ╚══════╝ ╚═════╝\n\n";
+    // Print the YOLO ASCII logo using a raw string literal for correctness and clarity.
+    std::cout << R"EOF(
+             .__           
+___.__. ____ |  |   ____ 
+   |  |/  _ \|  |  /  _ \
+\___  (  <_> )  |_(  <_> )
+/ ____|\____/|____/\____/ 
+\/                    
+)EOF" << std::endl;
 
     // --- Argument Parsing ---
     for (int i = 1; i < argc; ++i) {
