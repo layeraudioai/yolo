@@ -382,11 +382,28 @@ int main(int argc, char *argv[]) {
                 break;
             }
 
-            std::stringstream ss(line);
-            std::string path;
-            // Use std::quoted to correctly handle paths with spaces
-            while (config.input_files.size() < MAX_FILES && (ss >> std::quoted(path))) {
-                config.input_files.push_back(path);
+            size_t i = 0;
+            while (i < line.length() && config.input_files.size() < MAX_FILES) {
+                // Skip leading whitespace
+                while (i < line.length() && isspace(line[i])) {
+                    i++;
+                }
+                if (i >= line.length()) break;
+
+                size_t start = i;
+                if (line[i] == '"') { // Quoted path
+                    start++; // Skip the opening quote
+                    i++;
+                    while (i < line.length() && line[i] != '"') {
+                        i++;
+                    }
+                } else { // Unquoted path
+                    while (i < line.length() && !isspace(line[i])) {
+                        i++;
+                    }
+                }
+                config.input_files.push_back(line.substr(start, i - start));
+                if (i < line.length() && line[i] == '"') i++; // Skip closing quote for next iteration
             }
             if (config.input_files.size() >= MAX_FILES) {
                 std::cout << "Maximum number of files (" << MAX_FILES << ") reached." << std::endl;
