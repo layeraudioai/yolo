@@ -398,11 +398,11 @@ void run_yolo_process(YoloConfig *config, int seed) {
             }
 
             cmd_str += " -y \"";
-            if (!config->hyper_file_name.empty()) {
-                cmd_str += config->hyper_file_name + " \"";
-            } 
             cmd_str += output_filename;
             cmd_str += "\"";
+            if (!config->hyper_file_name.empty()) {
+                cmd_str += " \"" +config->hyper_file_name + "\"";
+            } 
 
             log_current_time(log_file);
             fprintf(log_file, "Run %d: Launching layered ffmpeg process\n", run);
