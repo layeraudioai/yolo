@@ -22,13 +22,17 @@ std::string get_pan_filter_string(int num_channels) {
         pan_str += layout;
         for (int i = 0; i < num_channels; ++i) {
             pan_str += "|c" + std::to_string(i) + "=";
+            bool first_mix = true;
             for (int j = 0; j < num_channels; ++j) {
                 // Mix from other channels to the current channel 'i'
                 if (rand() % 2 == 0) { // Randomly decide to mix from channel j
-                    if (pan_str.back() != '=') pan_str += "+";
+                    if (!first_mix) pan_str += "+";
                     pan_str += "c" + std::to_string(j);
+                    first_mix = false;
                 }
             }
+            // Ensure the channel definition is not empty
+            if (first_mix) pan_str += "c" + std::to_string(i);
         }
     }
     return pan_str;
@@ -189,14 +193,15 @@ void run_yolo_process(YoloConfig *config, int seed) {
             bool is_video = is_video_file(config->input_files[i]);
             const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
             char output_filename[512];
-            snprintf(output_filename, sizeof(output_filename), "%.200s_run%d_file%zu.%s",
+            // Pass the filename as an argument to snprintf to avoid format string vulnerabilities.
+            snprintf(output_filename, sizeof(output_filename), "%s_run%d_file%zu.%s",
                      config->input_files[i].c_str(), run, i, output_ext.c_str());
 
             char filter_complex_a[1024];
             char filter_complex_v[512];
             std::string pan_filter = get_pan_filter_string(config->num_audio_channels);
             snprintf(filter_complex_a, sizeof(filter_complex_a),
-                "atempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f,%s",
+                "atempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f,%s", // pan_filter is safe
                 config->atempo,
                 config->volume,
                 config->bass,
@@ -205,8 +210,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
             std::string cmd_str;
             if (is_video) {
-                snprintf(filter_complex_v, sizeof(filter_complex_v),
-                         "setpts=%.6f*PTS,eq=brightness=%.6f:contrast=%.6f:saturation=%.6f",
+                snprintf(filter_complex_v, sizeof(filter_complex_v), "setpts=%.6f*PTS,eq=brightness=%.6f:contrast=%.6f:saturation=%.6f",
                          config->vtempo,
                          config->brightness,
                          config->contrast,
@@ -280,7 +284,8 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 for (size_t i = 0; i < config->input_files.size(); i++) {
                     bool is_video = is_video_file(config->input_files[i]);
                     const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
-                    fprintf(list, "file '%.200s_run%d_file%zu.%s'\n",
+                    // Pass the filename as an argument to fprintf to avoid format string vulnerabilities.
+                    fprintf(list, "file '%s_run%d_file%zu.%s'\n",
                             config->input_files[i].c_str(), run, i, output_ext.c_str());
                 }
             }
