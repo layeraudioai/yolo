@@ -18,7 +18,7 @@ typedef HANDLE ProcessHandle;
 typedef pid_t ProcessHandle;
 #endif
 
-#define MAX_FILES 10
+#define MAX_FILES 100
 
 struct YoloConfig {
     YoloConfig() :
