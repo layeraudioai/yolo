@@ -1,3 +1,3 @@
 # yolo
 media randomizer
-release 8
+beta1.2release9
