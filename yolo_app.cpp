@@ -354,7 +354,7 @@ bool shuffle_audio_file(const std::string& input_file, const std::string& temp_o
 
     std::string decode_cmd = std::string(FFMPEG_PATH) + " -i \"" + input_file + "\" -f f32le -ac " + std::to_string(channels) + " -ar " + std::to_string(sample_rate) + " -";
 
-    pipe = popen(decode_cmd.c_str(), "r");
+    pipe = popen(decode_cmd.c_str(), "rb"); // Use "rb" for binary read on Windows
     if (!pipe) {
         fprintf(log_file, "  ERROR: ffmpeg popen failed for shuffle decode.\n");
         return false;
@@ -385,11 +385,15 @@ bool shuffle_audio_file(const std::string& input_file, const std::string& temp_o
 
     if (onsets.size() > 1) {
         // Rhythmic chunking based on detected onsets
+        const size_t frame_size_bytes = channels * bytes_per_sample;
+        if (frame_size_bytes == 0) return false; // Avoid division by zero
+
         size_t last_pos = 0;
         for (size_t i = 0; i < onsets.size(); ++i) {
             size_t current_pos = static_cast<size_t>(onsets[i] * bytes_per_second);
-            // Ensure we don't go past the end of the data
-            if (current_pos > pcm_data.size()) current_pos = pcm_data.size();
+            // Align the cut to the start of an audio frame to prevent corruption.
+            current_pos -= (current_pos % frame_size_bytes);
+
             if (current_pos > last_pos) {
                 chunks.emplace_back(pcm_data.begin() + last_pos, pcm_data.begin() + current_pos);
             }
@@ -416,7 +420,7 @@ bool shuffle_audio_file(const std::string& input_file, const std::string& temp_o
 
     // 4. Write the shuffled chunks to a new temporary WAV file via another ffmpeg process.
     std::string encode_cmd = std::string(FFMPEG_PATH) + " -y -f f32le -ar " + std::to_string(sample_rate) + " -ac " + std::to_string(channels) + " -i - -c:a pcm_s16le \"" + temp_output_file + "\"";
-    pipe = popen(encode_cmd.c_str(), "w");
+    pipe = popen(encode_cmd.c_str(), "wb"); // Use "wb" for binary write on Windows
     if (!pipe) {
         fprintf(log_file, "  ERROR: ffmpeg popen failed for shuffle encode.\n");
         return false;
