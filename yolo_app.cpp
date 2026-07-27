@@ -90,7 +90,10 @@ void get_other_config(YoloConfig *config, int *seed) {
         prompt_for_value("Enter quality (0[max]-31[lowest]): ", config->quality);
     if (config->num_audio_channels == -1)
         prompt_for_value("Enter number of output audio channels: ", config->num_audio_channels);
-
+// Always prompt for audio extension if not set by user arg
+    if (config->audio_output_extension == "mp3")
+        prompt_for_value("Enter audio output extension (e.g., mp3, ogg): ", config->audio_output_extension);
+   
     // Check if there are any video files before asking for video-specific options.
     bool has_video_files = false;
     for (const auto& file : config->input_files) {
@@ -99,7 +102,7 @@ void get_other_config(YoloConfig *config, int *seed) {
             break;
         }
     }
-    if (has_video_files && config->video_output_extension == "mkv") { // Not set by user arg
+    if (has_video_files) {
         std::cout << "Video specific options:\n";
         if (config->brightnessTarget == -1.0f)
             prompt_for_value("Enter brightness target: ", config->brightnessTarget);
@@ -107,11 +110,14 @@ void get_other_config(YoloConfig *config, int *seed) {
             prompt_for_value("Enter contrast target: ", config->contrastTarget);
         if (config->saturationTarget == -1.0f)
             prompt_for_value("Enter saturation target: ", config->saturationTarget);
-        prompt_for_value("Enter video output extension (e.g., mkv, mp4): ", config->video_output_extension);
+        if (config->video_output_extension == "mkv") // Not set by user arg
+            prompt_for_value("Enter video output extension (e.g., mkv, mp4): ", config->video_output_extension);
+        if (config->video_res.empty())
+            prompt_for_value("Enter video output resolution (e.g., 1920x1080): ", config->video_res);
+        if (config->video_fps.empty())
+            prompt_for_value("Enter video output framerate (e.g., 30): ", config->video_fps);
     }
-    // Always prompt for audio extension if not set by user arg
-    if (config->audio_output_extension == "mp3")
-        prompt_for_value("Enter audio output extension (e.g., mp3, ogg): ", config->audio_output_extension);
+    std::cout << "General options:\n";
     if (config->num_runs == -1)
         prompt_for_value("Enter number of runs: ", config->num_runs);
     if (*seed == 0)
@@ -294,9 +300,9 @@ void run_yolo_process(YoloConfig *config, int seed) {
         config->brightness = config->brightnessTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
         config->contrast = config->contrastTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
         config->saturation = config->saturationTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
-        config->volume = config->volume_lufs + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
+        config->volume = config->volume_lufs + ((float)rand()/(float)RAND_MAX * 0.6) + 0.25;
         config->treble = config->treble_gain + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
-        config->bass = config->bass_boost + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
+        config->bass = config->bass_boost + ((float)rand()/(float)RAND_MAX * 0.8) - 0.25;
         config->atempo = config->tempo_modifier + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
         config->vtempo = 1.0 / config->atempo;
 
@@ -381,6 +387,14 @@ void run_yolo_process(YoloConfig *config, int seed) {
             // Build the full command
             std::string cmd_str = std::string(FFMPEG_PATH) + " " + input_str +
                                   "-filter_complex \"" + filter_complex.str() + "\"";
+            
+            // Add video options if resolution or framerate are specified
+            if (!config->video_res.empty()) {
+                cmd_str += " -s " + config->video_res;
+            }
+            if (!config->video_fps.empty()) {
+                cmd_str += " -r " + config->video_fps;
+            }
 
             if (has_video_input) {
                 cmd_str += " -map \"[v_out]\" -q:v " + std::to_string(config->quality);
@@ -486,6 +500,9 @@ void run_yolo_process(YoloConfig *config, int seed) {
                               " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                               " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
                               cmd_str += " -q:v " + std::to_string(config->quality) +
+                              // Add video options if resolution or framerate are specified
+                              (!config->video_res.empty() ? " -s " + config->video_res : "") +
+                              (!config->video_fps.empty() ? " -r " + config->video_fps : "") +
                               audio_codec_str +
                               " -ac " + std::to_string(config->num_audio_channels) +
                               " -y \"" + output_filename + "\" \"" + config->hyper_file_name + "\""; }
@@ -495,6 +512,9 @@ void run_yolo_process(YoloConfig *config, int seed) {
                               " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                               " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
                               cmd_str += " -q:v " + std::to_string(config->quality) +
+                              // Add video options if resolution or framerate are specified
+                              (!config->video_res.empty() ? " -s " + config->video_res : "") +
+                              (!config->video_fps.empty() ? " -r " + config->video_fps : "") +
                               audio_codec_str +
                               " -ac " + std::to_string(config->num_audio_channels) +
                               " -y \"" + output_filename + "\""; }
@@ -649,6 +669,8 @@ void print_help(const char* app_name) {
     std::cout << "  -t, --tempo <f>               Set the tempo modifier (float).\n";
     std::cout << "  -q, --quality <int>           Set the output quality (0-31).\n";
     std::cout << "  --video-ext <ext>           Set the output extension for video files (default: mkv).\n";
+    std::cout << "  --video-res <WxH>           Set the output video resolution (e.g., 1920x1080).\n";
+    std::cout << "  --video-fps <rate>          Set the output video framerate (e.g., 30).\n";
     std::cout << "  --audio-ext <ext>           Set the output extension for audio files (default: mp3).\n";
     std::cout << "  -r, --runs <int>              Set the number of processing runs.\n";
     std::cout << "  -c, --channels <int>          Set the number of output audio channels.\n";
@@ -701,6 +723,10 @@ ___.__. ____ |  |   ____
             config.quality = std::stoi(argv[++i]);
         } else if (arg == "--video-ext" && i + 1 < argc) {
             config.video_output_extension = argv[++i];
+        } else if (arg == "--video-res" && i + 1 < argc) {
+            config.video_res = argv[++i];
+        } else if (arg == "--video-fps" && i + 1 < argc) {
+            config.video_fps = argv[++i];
         } else if (arg == "--audio-ext" && i + 1 < argc) {
             config.audio_output_extension = argv[++i];
         } else if ((arg == "-c" || arg == "--channels") && i + 1 < argc) {
