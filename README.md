@@ -1,3 +1,3 @@
 # yolo
 media randomizer
-beta1.31415
+beta1.314159
