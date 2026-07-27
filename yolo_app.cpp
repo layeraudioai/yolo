@@ -91,8 +91,11 @@ void get_other_config(YoloConfig *config, int *seed) {
     if (config->remix_enabled=='-') {
         prompt_for_value("Enable remixing (sample rearrangement)?: ", config->remix_enabled);
     }
-    if (config->remix_enabled=='y' && config->remix_seed == 0) {
-        prompt_for_value("Enter remix seed (0 for random): ", config->remix_seed);
+    if (config->remix_enabled=='y') {
+        if (config->remix_seed == 0)
+            prompt_for_value("Enter remix seed (0 for random): ", config->remix_seed);
+        if (config->remix_intensity == -1.0f)
+            prompt_for_value("Enter remix intensity (0.05-100): ", config->remix_intensity);
     }
     std::cout << "Audio options:\n";
     if (config->bass_boost == -1.0f)
@@ -326,7 +329,7 @@ std::vector<double> get_audio_onsets(const std::string& input_file, FILE* log_fi
     return onsets;
 }
 // Shuffle an audio file by decoding to raw PCM, shuffling chunks, and writing to a temp WAV file.
-bool shuffle_audio_file(const std::string& input_file, const std::string& temp_output_file, unsigned int remix_seed, FILE* log_file) {
+bool shuffle_audio_file(const std::string& input_file, const std::string& temp_output_file, unsigned int remix_seed, float remix_intensity, FILE* log_file) {
     log_current_time(log_file);
     fprintf(log_file, "  Shuffling '%s' to '%s' with seed %u\n", input_file.c_str(), temp_output_file.c_str(), remix_seed);
 
@@ -415,8 +418,24 @@ bool shuffle_audio_file(const std::string& input_file, const std::string& temp_o
         }
     }
 
+    // Use remix_intensity to determine how many chunks to shuffle.
+    // Clamp intensity to the valid range [0.05, 100.0].
+    float intensity = std::max(0.05f, std::min(100.0f, remix_intensity));
+    size_t num_chunks_to_shuffle = static_cast<size_t>(chunks.size() * (intensity / 100.0f));
+
+    // To shuffle only a subset, we create a vector of indices, shuffle it,
+    // and then pick the first 'num_chunks_to_shuffle' indices to actually move.
+    std::vector<size_t> indices(chunks.size());
+    for(size_t i = 0; i < chunks.size(); ++i) indices[i] = i;
+
     std::mt19937 g(remix_seed);
-    std::shuffle(chunks.begin(), chunks.end(), g);
+    std::shuffle(indices.begin(), indices.end(), g);
+
+    // Create a new vector for the final chunk order.
+    std::vector<std::vector<char>> final_chunks = chunks;
+    for (size_t i = 0; i < num_chunks_to_shuffle; ++i) {
+        final_chunks[indices[i]] = chunks[i];
+    }
 
     // 4. Write the shuffled chunks to a new temporary WAV file via another ffmpeg process.
     std::string encode_cmd = std::string(FFMPEG_PATH) + " -y -f f32le -ar " + std::to_string(sample_rate) + " -ac " + std::to_string(channels) + " -i - -c:a pcm_s16le \"" + temp_output_file + "\"";
@@ -426,7 +445,7 @@ bool shuffle_audio_file(const std::string& input_file, const std::string& temp_o
         return false;
     }
 
-    for (const auto& chunk : chunks) {
+    for (const auto& chunk : final_chunks) {
         fwrite(chunk.data(), 1, chunk.size(), pipe);
     }
     pclose(pipe);
@@ -498,7 +517,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
             if (config->remix_enabled == 'y') {
                 for (size_t file_idx = 0; file_idx < config->input_files.size(); ++file_idx) {
                     std::string temp_filename = "temp_remix_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav";
-                    if (shuffle_audio_file(config->input_files[file_idx], temp_filename, current_remix_seed + file_idx, log_file)) {
+                    if (shuffle_audio_file(config->input_files[file_idx], temp_filename, current_remix_seed + file_idx, config->remix_intensity, log_file)) {
                         current_run_inputs[file_idx] = temp_filename;
                         temp_files_to_delete.push_back(temp_filename);
                     }
@@ -635,7 +654,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
                 if (config->remix_enabled == 'y') {
                     std::string temp_filename = "temp_remix_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav";
-                    if (shuffle_audio_file(current_input_file, temp_filename, current_remix_seed + file_idx, log_file)) {
+                    if (shuffle_audio_file(current_input_file, temp_filename, current_remix_seed + file_idx, config->remix_intensity, log_file)) {
                         current_input_file = temp_filename;
                         temp_files_to_delete.push_back(temp_filename);
                     }
@@ -858,6 +877,7 @@ void print_help(const char* app_name) {
     std::cout << "  --layer-files               Layer all inputs into a single output file per run.\n";
     std::cout << "  --remix                     Enable remixing (sample rearrangement).\n";
     std::cout << "  --no-remix                  Disable remixing (sample rearrangement).\n";
+    std::cout << "  --remix-intensity <f>       Set remix intensity (0.05-100). Lower is less shuffling.\n";
     std::cout << "  --remix-seed <int>          Set the seed for remixing (0 for random).\n";
     std::cout << "  --no-layer-files            Do not layer inputs into a single output file per run.\n";
     std::cout << "  -h, --help                  Show this help message.\n";
@@ -909,6 +929,8 @@ ___.__. ____ |  |   ____
             config.remix_enabled = 'y';
         } else if (arg == "--no-remix") {
             config.remix_enabled = 'n';
+        } else if (arg == "--remix-intensity" && i + 1 < argc) {
+            config.remix_intensity = std::stof(argv[++i]);
         } else if (arg == "--remix-seed" && i + 1 < argc) {
             config.remix_seed = std::stoi(argv[++i]);
         } else if (arg == "--no-layer-files") {

@@ -25,6 +25,7 @@ struct YoloConfig {
         layer_files('-'),
         remix_enabled('-'),
         remix_seed(0),
+        remix_intensity(-1.0f),
         create_hyper_file('-'),
         hyper_file_name(),
         bass_boost(-1.0f),
@@ -58,6 +59,7 @@ struct YoloConfig {
     char layer_files;
     char remix_enabled;
     int remix_seed;
+    float remix_intensity;
     char create_hyper_file;
     std::string hyper_file_name;
     float bass_boost;
