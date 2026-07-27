@@ -23,6 +23,8 @@ typedef pid_t ProcessHandle;
 struct YoloConfig {
     YoloConfig() :
         layer_files('-'),
+        remix_enabled('-'),
+        remix_seed(0),
         create_hyper_file('-'),
         hyper_file_name(),
         bass_boost(-1.0f),
@@ -45,6 +47,8 @@ struct YoloConfig {
         video_res(),
         video_fps(),
         audio_output_extension("mp3"),
+        audio_output_extension_is_default(true),
+        runNumber_is_default(true),
         runNumber(1),
         num_runs(-1),
         num_audio_channels(-1)
@@ -52,6 +56,8 @@ struct YoloConfig {
 
     std::vector<std::string> input_files;
     char layer_files;
+    char remix_enabled;
+    int remix_seed;
     char create_hyper_file;
     std::string hyper_file_name;
     float bass_boost;
@@ -74,6 +80,8 @@ struct YoloConfig {
     std::string video_res;
     std::string video_fps;
     std::string audio_output_extension;
+    bool audio_output_extension_is_default;
+    bool runNumber_is_default;
     int runNumber;
     int num_runs;
     int num_audio_channels;

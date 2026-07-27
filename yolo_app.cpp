@@ -2,6 +2,7 @@
 #include <sstream>
 #include <iterator>
 #include <iomanip>
+#include <random>
 #include <algorithm>
 #include <iostream>
 #define MAX_PROCESSES (MAX_FILES * 10)
@@ -25,20 +26,30 @@ std::string get_pan_filter_string(int num_input_channels, int num_output_channel
         else layout = std::to_string(num_output_channels);
 
         pan_str += layout;
+
+        // Create a vector of input channel indices to be shuffled for each output channel.
+        std::vector<int> input_indices(num_input_channels);
+        for(int k=0; k<num_input_channels; ++k) input_indices[k] = k;
+
         // Define each output channel (c0, c1, ... c<num_output_channels-1>)
         for (int i = 0; i < num_output_channels; ++i) {
             pan_str += "|c" + std::to_string(i) + "=";
             bool first_mix = true;
-            // Mix from the available *input* channels (c0, c1, ... c<num_input_channels-1>)
-            for (int j = 0; j < num_input_channels; ++j) {
+
+            // std::shuffle requires a random number generator. We'll create one seeded from the C-style rand().
+            std::mt19937 g(rand());
+            std::shuffle(input_indices.begin(), input_indices.end(), g);
+
+            // Mix from the available input channels in a random order.
+            for (int input_channel_index : input_indices) {
                 if (rand() % 2 == 0) { // Randomly decide to mix from channel j
-                    if (!first_mix) pan_str += "+";
-                    pan_str += "c" + std::to_string(j);
+                    if (!first_mix) pan_str += (rand() % 2 == 0) ? "+" : "-"; // Randomly add or subtract
+                    pan_str += "c" + std::to_string(input_channel_index);
                     first_mix = false;
                 }
             }
-            // Ensure the channel definition is not empty
-            if (first_mix) pan_str += "c" + std::to_string(i % num_input_channels);
+            // Ensure the channel definition is not empty, falling back to a default mix.
+            if (first_mix) pan_str += "c" + std::to_string(i % num_input_channels); // e.g., c0=c0, c1=c1
         }
     }
     return pan_str;
@@ -77,6 +88,12 @@ void get_other_config(YoloConfig *config, int *seed) {
     if (config->create_hyper_file=='y') {
         prompt_for_value("Hyper file name?: ", config->hyper_file_name);
     }
+    if (config->remix_enabled=='-') {
+        prompt_for_value("Enable remixing (sample rearrangement)?: ", config->remix_enabled);
+    }
+    if (config->remix_enabled=='y' && config->remix_seed == 0) {
+        prompt_for_value("Enter remix seed (0 for random): ", config->remix_seed);
+    }
     std::cout << "Audio options:\n";
     if (config->bass_boost == -1.0f)
         prompt_for_value("Enter bass boost: ", config->bass_boost);
@@ -90,8 +107,8 @@ void get_other_config(YoloConfig *config, int *seed) {
         prompt_for_value("Enter quality (0[max]-31[lowest]): ", config->quality);
     if (config->num_audio_channels == -1)
         prompt_for_value("Enter number of output audio channels: ", config->num_audio_channels);
-// Always prompt for audio extension if not set by user arg
-    if (config->audio_output_extension == "mp3")
+    // Prompt for audio extension only if it wasn't set via command-line argument.
+    if (config->audio_output_extension_is_default)
         prompt_for_value("Enter audio output extension (e.g., mp3, ogg): ", config->audio_output_extension);
    
     // Check if there are any video files before asking for video-specific options.
@@ -120,12 +137,11 @@ void get_other_config(YoloConfig *config, int *seed) {
     std::cout << "General options:\n";
     if (config->num_runs == -1)
         prompt_for_value("Enter number of runs: ", config->num_runs);
-    if (*seed == 0)
-        prompt_for_value("Enter random seed (0 for random): ", *seed);
-    if (*seed != 0)
+    if (config->runNumber_is_default && *seed != 0) // Only prompt if not set by arg and a seed is used
         prompt_for_value("Starting run number: ", config->runNumber);
-    else 
-        config->runNumber = 1;
+    if (*seed == 0) {
+        prompt_for_value("Enter random seed (0 for random): ", *seed);
+    }
 }
 
 void log_current_time(FILE *f) {
@@ -290,11 +306,16 @@ void run_yolo_process(YoloConfig *config, int seed) {
     ProcessHandle processes[MAX_PROCESSES];
     int process_count = 0;
 
-    for (int run = 0; run < config->num_runs; run++) {
+    for (int i = 0; i < config->num_runs; i++) {
+        int run = config->runNumber + i;
         // Re-seed the RNG for each run to get different random values.
+        // The 'mixing' seed controls effects like pan, volume, EQ, etc.
         // Using seed + run makes the results for each run deterministic and reproducible.
         unsigned int current_seed = (seed == 0) ? (unsigned int)time(NULL) + run : seed + run;
         srand(current_seed);
+
+        // The 'remixing' seed controls the ashuffle filter for sample rearrangement.
+        unsigned int current_remix_seed = (config->remix_seed == 0) ? (unsigned int)time(NULL) + run : config->remix_seed + run;
 
         // Recalculate randomized parameters for each run
         config->brightness = config->brightnessTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
@@ -306,8 +327,8 @@ void run_yolo_process(YoloConfig *config, int seed) {
         config->atempo = config->tempo_modifier + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
         config->vtempo = 1.0 / config->atempo;
 
-        log_current_time(log_file);
-        fprintf(log_file, "Starting Run %d with Seed %u\n", run, current_seed);
+        log_current_time(log_file); 
+        fprintf(log_file, "Starting Run %d with Mix Seed %u, Remix Seed %u\n", run, current_seed, (config->remix_enabled == 'y' ? current_remix_seed : 0));
 
         if (config->layer_files=='y') {
             // --- Layered files logic ---
@@ -361,9 +382,19 @@ void run_yolo_process(YoloConfig *config, int seed) {
             for (int index : audio_stream_indices) {
                 filter_complex << "[" << index << ":a]";
             }
-            filter_complex << "amerge=inputs=" << audio_stream_indices.size() << "[a_merged];";
+            filter_complex << "amerge=inputs=" << audio_stream_indices.size() << "[a_merged];";            
+            
+            // Define the current audio stream for chaining filters.
+            std::string current_audio_stream = "[a_merged]";
+            // Add remixing/shuffling filter if enabled. This should be one of the first filters.
+            if (config->remix_enabled == 'y') {
+                filter_complex << current_audio_stream << "ashuffle=seed=" << current_remix_seed << "[a_shuffled];";
+                current_audio_stream = "[a_shuffled]";
+                fprintf(log_file, "  Remixing enabled for run %d with ashuffle seed %u\n", run, current_remix_seed);
+            }
+
             std::string pan_filter = get_pan_filter_string(total_input_channels, config->num_audio_channels);
-            filter_complex << "[a_merged]atempo=" << config->atempo
+            filter_complex << current_audio_stream << "atempo=" << config->atempo
                            << ",volume=" << config->volume
                            << ",bass=gain=" << config->bass
                            << ",treble=gain=" << config->treble
@@ -458,7 +489,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
                 std::string base_filename = get_basename(config->input_files[i]);
                 char output_filename[512];
-                // Pass the filename as an argument to snprintf to avoid format string vulnerabilities.
+                // Use %zu for size_t type 'i' to fix format mismatch warning/error.
                 snprintf(output_filename, sizeof(output_filename), "%s_run%d_file%zu.%s",
                          base_filename.c_str(), run, i, output_ext.c_str());
 
@@ -466,9 +497,18 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 char filter_complex_v[512];
                 // Correctly get the channel count of the *input* file for the pan filter.
                 int input_channels = get_audio_channel_count(config->input_files[i], log_file);
+
+                // Build the audio filter chain string.
+                std::string audio_filter_chain;
+                if (config->remix_enabled == 'y') {
+                    audio_filter_chain += "ashuffle=seed=" + std::to_string(current_remix_seed) + ",";
+                    fprintf(log_file, "  Remixing enabled for run %d with ashuffle seed %u\n", run, current_remix_seed);
+                }
+
                 std::string pan_filter = get_pan_filter_string(input_channels, config->num_audio_channels);
                 snprintf(filter_complex_a, sizeof(filter_complex_a),
-                    "atempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f,%s", // pan_filter is safe
+                    "%satempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f,%s", // pan_filter is safe
+                    audio_filter_chain.c_str(),
                     config->atempo,
                     config->volume,
                     config->bass,
@@ -545,7 +585,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 }
 
                 log_current_time(log_file);
-                fprintf(log_file, "Run %d: Launching ffmpeg for input: '%s'\n", run, config->input_files[i].c_str());            fprintf(log_file, "  Command: %s\n", cmd_str.c_str());
+                fprintf(log_file, "Run %d: Launching ffmpeg for input: '%s'\n", run, config->input_files[i].c_str());
                 fflush(log_file);
 
 #ifdef _WIN32
@@ -594,19 +634,19 @@ void run_yolo_process(YoloConfig *config, int seed) {
     if (config->create_hyper_file=='y') {
         FILE *list = fopen("list.txt", "w");
         if (list) {
-            for (int run = config->runNumber; run < config->num_runs+config->runNumber; run++) {
-                for (size_t i = 0; i < config->input_files.size(); i++) {
+            for (int i = 0; i < config->num_runs; i++) {
+                int run = config->runNumber + i;
+                for (size_t j = 0; j < config->input_files.size(); j++) {
                     if (config->layer_files=='y') {
-                        bool has_video = is_video_file(config->input_files[0]); // Simplified check, assumes homogeneity or first file is representative
-                        const std::string& output_ext = has_video ? config->video_output_extension : config->audio_output_extension;
+                        const std::string& output_ext = is_video_file(config->input_files[0]) ? config->video_output_extension : config->audio_output_extension;
                         fprintf(list, "file 'layered_output_run%d.%s'\n", run, output_ext.c_str());
                         break;
                     } else {
-                        bool is_video = is_video_file(config->input_files[i]);
-                        const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
-                        std::string base_filename = get_basename(config->input_files[i]);
+                        const std::string& output_ext = is_video_file(config->input_files[j]) ? config->video_output_extension : config->audio_output_extension;
+                        std::string base_filename = get_basename(config->input_files[j]);
+                        // Use %zu for size_t type 'j' to fix format mismatch warning/error.
                         fprintf(list, "file '%s_run%d_file%zu.%s'\n",
-                                base_filename.c_str(), run, i, output_ext.c_str());
+                                base_filename.c_str(), run, j, output_ext.c_str());
                     }
                 }
             }
@@ -657,8 +697,13 @@ void print_help(const char* app_name) {
     std::cout << "Usage: " << app_name << " [options] [input_file1 input_file2 ...]\n\n";
     std::cout << "Options:\n";
     std::cout << "  --layer-files               Layer all inputs into a single output file per run.\n";
+    std::cout << "  --remix                     Enable remixing (sample rearrangement).\n";
+    std::cout << "  --no-remix                  Disable remixing (sample rearrangement).\n";
+    std::cout << "  --remix-seed <int>          Set the seed for remixing (0 for random).\n";
+    std::cout << "  --no-layer-files            Do not layer inputs into a single output file per run.\n";
     std::cout << "  -h, --help                  Show this help message.\n";
     std::cout << "  --create-hyper-file         Flag to create a concatenated hyper file.\n";
+    std::cout << "  --no-hyper-file             Do not create a concatenated hyper file.\n";
     std::cout << "  --hyper-file_name <path>     Set the output name for the hyper file.\n";
     std::cout << "  -bt, --brightness-target <f>  Set the target brightness (float).\n";
     std::cout << "  -ct, --contrast-target <f>    Set the target contrast (float).\n";
@@ -674,6 +719,7 @@ void print_help(const char* app_name) {
     std::cout << "  --audio-ext <ext>           Set the output extension for audio files (default: mp3).\n";
     std::cout << "  -r, --runs <int>              Set the number of processing runs.\n";
     std::cout << "  -c, --channels <int>          Set the number of output audio channels.\n";
+    std::cout << "  --starting-run <int>        Set the starting run number (default: 1).\n";
     std::cout << "  -s, --seed <int>              Set the random seed (0 for random).\n";
     std::cout << "\nIf options are not provided, you will be prompted for them interactively.\n";
 }
@@ -700,11 +746,36 @@ ___.__. ____ |  |   ____
             return 0;
         } else if (arg == "--layer-files") {
             config.layer_files = 'y';
+        } else if (arg == "--remix") {
+            config.remix_enabled = 'y';
+        } else if (arg == "--no-remix") {
+            config.remix_enabled = 'n';
+        } else if (arg == "--remix-seed" && i + 1 < argc) {
+            config.remix_seed = std::stoi(argv[++i]);
+        } else if (arg == "--no-layer-files") {
+            config.layer_files = 'n';
         } else if (arg == "--create-hyper-file") {
             config.create_hyper_file = 'y';
+        } else if (arg == "--no-hyper-file") {
+            config.create_hyper_file = 'n';
         } else if ((arg == "--hyper-filename" || arg == "--hyper") && i + 1 < argc) {
             config.hyper_file_name = argv[++i];
             config.create_hyper_file = 'y';
+        } else if ((arg == "-r" || arg == "--runs")) {
+            if (i + 1 < argc) {
+                try {
+                    config.num_runs = std::stoi(argv[++i]);
+                } catch (const std::invalid_argument& e) {
+                    std::cerr << "Error: Invalid argument for " << arg << ". Expected an integer, but got '" << argv[i] << "'.\n";
+                    return 1; // Exit with an error code
+                } catch (const std::out_of_range& e) {
+                    std::cerr << "Error: Value for " << arg << " is out of range: '" << argv[i] << "'.\n";
+                    return 1; // Exit with an error code
+                }
+            } else {
+                std::cerr << "Error: Option '" << arg << "' requires an argument.\n";
+                return 1; // Exit with an error code
+            }
         } else if ((arg == "-bt" || arg == "--brightness-target") && i + 1 < argc) {
             config.brightnessTarget = std::stof(argv[++i]);
         } else if ((arg == "-ct" || arg == "--contrast-target") && i + 1 < argc) {
@@ -729,8 +800,12 @@ ___.__. ____ |  |   ____
             config.video_fps = argv[++i];
         } else if (arg == "--audio-ext" && i + 1 < argc) {
             config.audio_output_extension = argv[++i];
+            config.audio_output_extension_is_default = false;
         } else if ((arg == "-c" || arg == "--channels") && i + 1 < argc) {
             config.num_audio_channels = std::stoi(argv[++i]);
+        } else if (arg == "--starting-run" && i + 1 < argc) {
+            config.runNumber = std::stoi(argv[++i]);
+            config.runNumber_is_default = false;
         } else if ((arg == "-s" || arg == "--seed") && i + 1 < argc) {
             seed = std::stoi(argv[++i]);
         } else if (arg[0] == '-') {
