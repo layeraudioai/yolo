@@ -290,6 +290,145 @@ int get_audio_channel_count(const std::string& filename, FILE* log_file) {
     return (channels > 0) ? channels : 2; // Fallback to 2 if detection fails or returns 0
 }
 
+// Use ffmpeg's ametadata filter to detect audio onsets (transients)
+std::vector<double> get_audio_onsets(const std::string& input_file, FILE* log_file) {
+    std::vector<double> onsets;
+    // Command to run ffmpeg, analyze with ametadata, and print onset times to stderr.
+    // We use a null output to prevent creating a file.
+    std::string command = std::string(FFMPEG_PATH) + " -i \"" + input_file + "\" -af \"ametadata=mode=print:key=lavfi.onset.time\" -f null -";
+
+    fprintf(log_file, "  Detecting onsets for '%s'\n", input_file.c_str());
+
+    // We need to capture stderr, not stdout.
+#ifdef _WIN32
+    command += " 2>&1"; // Redirect stderr to stdout on Windows
+#else
+    command += " 2>&1"; // Works for POSIX too
+#endif
+
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        fprintf(log_file, "  ERROR: popen failed for onset detection.\n");
+        return onsets;
+    }
+
+    char buffer[256];
+    while (fgets(buffer, sizeof(buffer), pipe) != NULL) {
+        std::string line(buffer);
+        size_t pos = line.find("lavfi.onset.time:");
+        if (pos != std::string::npos) {
+            double onset_time = std::stod(line.substr(pos + 17));
+            onsets.push_back(onset_time);
+        }
+    }
+    pclose(pipe);
+    fprintf(log_file, "  Detected %zu onsets.\n", onsets.size());
+    return onsets;
+}
+// Shuffle an audio file by decoding to raw PCM, shuffling chunks, and writing to a temp WAV file.
+bool shuffle_audio_file(const std::string& input_file, const std::string& temp_output_file, unsigned int remix_seed, FILE* log_file) {
+    log_current_time(log_file);
+    fprintf(log_file, "  Shuffling '%s' to '%s' with seed %u\n", input_file.c_str(), temp_output_file.c_str(), remix_seed);
+
+    // 1. Use ffmpeg to decode the input to raw PCM (f32le format) and get properties.
+    // We need sample rate and channel count to correctly interpret the raw data.
+    std::string probe_cmd = std::string(FFPROBE_PATH) + " -v error -select_streams a:0 -show_entries stream=sample_rate,channels -of default=noprint_wrappers=1:nokey=1 \"" + input_file + "\"";
+    
+    int sample_rate = 44100;
+    int channels = 2;
+
+    FILE* pipe = popen(probe_cmd.c_str(), "r");
+    if (!pipe) {
+        fprintf(log_file, "  ERROR: ffprobe popen failed for shuffle properties.\n");
+        return false;
+    }
+    char buffer[128];
+    if (fgets(buffer, sizeof(buffer), pipe) != NULL) { sample_rate = atoi(buffer); }
+    if (fgets(buffer, sizeof(buffer), pipe) != NULL) { channels = atoi(buffer); }
+    pclose(pipe);
+
+    if (sample_rate <= 0 || channels <= 0) {
+        fprintf(log_file, "  ERROR: Failed to get valid sample rate/channels for shuffling.\n");
+        return false;
+    }
+
+    std::string decode_cmd = std::string(FFMPEG_PATH) + " -i \"" + input_file + "\" -f f32le -ac " + std::to_string(channels) + " -ar " + std::to_string(sample_rate) + " -";
+
+    pipe = popen(decode_cmd.c_str(), "r");
+    if (!pipe) {
+        fprintf(log_file, "  ERROR: ffmpeg popen failed for shuffle decode.\n");
+        return false;
+    }
+
+    // 2. Read all raw PCM data into a vector.
+    std::vector<char> pcm_data;
+    char read_buffer[4096];
+    size_t bytes_read;
+    while ((bytes_read = fread(read_buffer, 1, sizeof(read_buffer), pipe)) > 0) {
+        pcm_data.insert(pcm_data.end(), read_buffer, read_buffer + bytes_read);
+    }
+    pclose(pipe);
+
+    // 3. Get rhythmic onsets to create musically-aware chunks.
+    std::vector<double> onsets = get_audio_onsets(input_file, log_file);
+
+    const size_t bytes_per_sample = 4; // f32le
+    const size_t bytes_per_second = sample_rate * channels * bytes_per_sample;
+
+    if (pcm_data.empty()) {
+        fprintf(log_file, "  ERROR: No PCM data for shuffling.\n");
+        return false;
+    }
+
+    // A "chunk" is now a region of PCM data between two onsets.
+    std::vector<std::vector<char>> chunks;
+
+    if (onsets.size() > 1) {
+        // Rhythmic chunking based on detected onsets
+        size_t last_pos = 0;
+        for (size_t i = 0; i < onsets.size(); ++i) {
+            size_t current_pos = static_cast<size_t>(onsets[i] * bytes_per_second);
+            // Ensure we don't go past the end of the data
+            if (current_pos > pcm_data.size()) current_pos = pcm_data.size();
+            if (current_pos > last_pos) {
+                chunks.emplace_back(pcm_data.begin() + last_pos, pcm_data.begin() + current_pos);
+            }
+            last_pos = current_pos;
+        }
+        // Add the final part of the audio after the last onset
+        if (last_pos < pcm_data.size()) {
+            chunks.emplace_back(pcm_data.begin() + last_pos, pcm_data.end());
+        }
+    } else {
+        // Fallback to fixed-time chunking if no onsets were found
+        fprintf(log_file, "  No onsets found, falling back to fixed-duration chunking.\n");
+        const float chunk_duration_seconds = 0.2f; // A slightly larger default
+        const size_t chunk_size_bytes = static_cast<size_t>(chunk_duration_seconds * bytes_per_second);
+        if (chunk_size_bytes == 0) return false;
+        for (size_t i = 0; i < pcm_data.size(); i += chunk_size_bytes) {
+            size_t end = std::min(i + chunk_size_bytes, pcm_data.size());
+            chunks.emplace_back(pcm_data.begin() + i, pcm_data.begin() + end);
+        }
+    }
+
+    std::mt19937 g(remix_seed);
+    std::shuffle(chunks.begin(), chunks.end(), g);
+
+    // 4. Write the shuffled chunks to a new temporary WAV file via another ffmpeg process.
+    std::string encode_cmd = std::string(FFMPEG_PATH) + " -y -f f32le -ar " + std::to_string(sample_rate) + " -ac " + std::to_string(channels) + " -i - -c:a pcm_s16le \"" + temp_output_file + "\"";
+    pipe = popen(encode_cmd.c_str(), "w");
+    if (!pipe) {
+        fprintf(log_file, "  ERROR: ffmpeg popen failed for shuffle encode.\n");
+        return false;
+    }
+
+    for (const auto& chunk : chunks) {
+        fwrite(chunk.data(), 1, chunk.size(), pipe);
+    }
+    pclose(pipe);
+    return true;
+}
+
 void run_yolo_process(YoloConfig *config, int seed) {
 
     FILE *log_file = fopen("yolo.log", "a");
@@ -305,6 +444,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
     ProcessHandle processes[MAX_PROCESSES];
     int process_count = 0;
+    std::vector<std::string> temp_files_to_delete;
 
     for (int i = 0; i < config->num_runs; i++) {
         int run = config->runNumber + i;
@@ -328,7 +468,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
         config->vtempo = 1.0 / config->atempo;
 
         log_current_time(log_file); 
-        fprintf(log_file, "Starting Run %d with Mix Seed %u, Remix Seed %u\n", run, current_seed, (config->remix_enabled == 'y' ? current_remix_seed : 0));
+        fprintf(log_file, "Starting Run %d with Mix Seed %u, Remix Seed %u\n", run, current_seed, (config->remix_enabled == 'y' ? current_remix_seed : 0)); fflush(log_file);
 
         if (config->layer_files=='y') {
             // --- Layered files logic ---
@@ -336,8 +476,9 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
             // Check if there are any video files to determine the output container.
             bool has_video_input = false;
-            for (const auto& file : config->input_files) {
-                if (is_video_file(file)) {
+            std::vector<std::string> current_run_inputs = config->input_files; // Start with original inputs
+            for (size_t file_idx = 0; file_idx < current_run_inputs.size(); ++file_idx) {
+                if (is_video_file(current_run_inputs[file_idx])) {
                     has_video_input = true;
                     break;
                 }
@@ -350,7 +491,17 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
             // Build input string: -i "file1" -i "file2" ...
             std::string input_str;
-            for (const auto& file : config->input_files) {
+            if (config->remix_enabled == 'y') {
+                for (size_t file_idx = 0; file_idx < config->input_files.size(); ++file_idx) {
+                    std::string temp_filename = "temp_remix_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav";
+                    if (shuffle_audio_file(config->input_files[file_idx], temp_filename, current_remix_seed + file_idx, log_file)) {
+                        current_run_inputs[file_idx] = temp_filename;
+                        temp_files_to_delete.push_back(temp_filename);
+                    }
+                }
+            }
+
+            for (const auto& file : current_run_inputs) {
                 input_str += "-i \"" + file + "\" ";
             }
 
@@ -359,9 +510,9 @@ void run_yolo_process(YoloConfig *config, int seed) {
             std::vector<int> audio_stream_indices;
             std::vector<int> video_stream_indices;
 
-            for (size_t i = 0; i < config->input_files.size(); ++i) {
-                audio_stream_indices.push_back(i); // Assume every input has an audio stream
-                if (is_video_file(config->input_files[i])) {
+            for (size_t i = 0; i < current_run_inputs.size(); ++i) {
+                audio_stream_indices.push_back(i);
+                if (is_video_file(current_run_inputs[i])) {
                     video_stream_indices.push_back(i);
                 }
             }
@@ -370,7 +521,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
             int total_input_channels = 0;
             log_current_time(log_file);
             fprintf(log_file, "Run %d: Detecting input channel counts for layering...\n", run);
-            for (const auto& file : config->input_files) {
+            for (const auto& file : current_run_inputs) {
                 int file_channels = get_audio_channel_count(file, log_file);
                 fprintf(log_file, "  - '%s': %d channels\n", file.c_str(), file_channels);
                 total_input_channels += file_channels;
@@ -382,19 +533,10 @@ void run_yolo_process(YoloConfig *config, int seed) {
             for (int index : audio_stream_indices) {
                 filter_complex << "[" << index << ":a]";
             }
-            filter_complex << "amerge=inputs=" << audio_stream_indices.size() << "[a_merged];";            
+            filter_complex << "amerge=inputs=" << audio_stream_indices.size() << "[a_merged];";
             
-            // Define the current audio stream for chaining filters.
-            std::string current_audio_stream = "[a_merged]";
-            // Add remixing/shuffling filter if enabled. This should be one of the first filters.
-            if (config->remix_enabled == 'y') {
-                filter_complex << current_audio_stream << "ashuffle=seed=" << current_remix_seed << "[a_shuffled];";
-                current_audio_stream = "[a_shuffled]";
-                fprintf(log_file, "  Remixing enabled for run %d with ashuffle seed %u\n", run, current_remix_seed);
-            }
-
             std::string pan_filter = get_pan_filter_string(total_input_channels, config->num_audio_channels);
-            filter_complex << current_audio_stream << "atempo=" << config->atempo
+            filter_complex << "[a_merged]atempo=" << config->atempo
                            << ",volume=" << config->volume
                            << ",bass=gain=" << config->bass
                            << ",treble=gain=" << config->treble
@@ -484,31 +626,38 @@ void run_yolo_process(YoloConfig *config, int seed) {
 #endif
         } else {
             // --- Original per-file logic ---
-            for (size_t i = 0; i < config->input_files.size(); i++) {
-                bool is_video = is_video_file(config->input_files[i]);
+            for (size_t file_idx = 0; file_idx < config->input_files.size(); file_idx++) {
+                std::string current_input_file = config->input_files[file_idx];
+
+                if (config->remix_enabled == 'y') {
+                    std::string temp_filename = "temp_remix_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav";
+                    if (shuffle_audio_file(current_input_file, temp_filename, current_remix_seed + file_idx, log_file)) {
+                        current_input_file = temp_filename;
+                        temp_files_to_delete.push_back(temp_filename);
+                    }
+                }
+
+                bool is_video = is_video_file(config->input_files[file_idx]); // Check original for video properties
                 const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
-                std::string base_filename = get_basename(config->input_files[i]);
+                std::string base_filename = get_basename(config->input_files[file_idx]);
                 char output_filename[512];
                 // Use %zu for size_t type 'i' to fix format mismatch warning/error.
                 snprintf(output_filename, sizeof(output_filename), "%s_run%d_file%zu.%s",
-                         base_filename.c_str(), run, i, output_ext.c_str());
+                         base_filename.c_str(), run, file_idx, output_ext.c_str());
 
                 char filter_complex_a[4096];
                 char filter_complex_v[512];
                 // Correctly get the channel count of the *input* file for the pan filter.
-                int input_channels = get_audio_channel_count(config->input_files[i], log_file);
+                int input_channels = get_audio_channel_count(current_input_file, log_file);
 
                 // Build the audio filter chain string.
                 std::string audio_filter_chain;
-                if (config->remix_enabled == 'y') {
-                    audio_filter_chain += "ashuffle=seed=" + std::to_string(current_remix_seed) + ",";
-                    fprintf(log_file, "  Remixing enabled for run %d with ashuffle seed %u\n", run, current_remix_seed);
-                }
+                // ashuffle is no longer needed here as it's done pre-process
 
                 std::string pan_filter = get_pan_filter_string(input_channels, config->num_audio_channels);
                 snprintf(filter_complex_a, sizeof(filter_complex_a),
                     "%satempo=%.6f,volume=%.6f,bass=gain=%.6f,treble=gain=%.6f,%s", // pan_filter is safe
-                    audio_filter_chain.c_str(),
+                    audio_filter_chain.c_str(), // This is now correctly matched with the leading %s
                     config->atempo,
                     config->volume,
                     config->bass,
@@ -536,7 +685,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
                     if (config->create_hyper_file=='y') { 
                         std::cout << "Using: " << config->hyper_file_name << std::endl;
-                        cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
+                        cmd_str = std::string(FFMPEG_PATH) + " -i \"" + current_input_file + "\"" +
                               " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                               " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
                               cmd_str += " -q:v " + std::to_string(config->quality) +
@@ -548,7 +697,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                               " -y \"" + output_filename + "\" \"" + config->hyper_file_name + "\""; }
                     else { 
                         std::cout << "Using: " << config->hyper_file_name << std::endl;
-                        cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
+                        cmd_str = std::string(FFMPEG_PATH) + " -i \"" + current_input_file + "\"" +
                               " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                               " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
                               cmd_str += " -q:v " + std::to_string(config->quality) +
@@ -575,17 +724,17 @@ void run_yolo_process(YoloConfig *config, int seed) {
                         audio_opts_str = " -q:a " + std::to_string(config->quality) +
                                          " -ac " + std::to_string(config->num_audio_channels);
                     }
-                    if (config->create_hyper_file=='y') { cmd_str = std::string(FFMPEG_PATH) + " -i \"" + 
-                              config->input_files[i] + "\"" + " -af \"" + 
+                    if (config->create_hyper_file=='y') { cmd_str = std::string(FFMPEG_PATH) + " -i \"" +
+                              current_input_file + "\"" + " -af \"" +
                               std::string(filter_complex_a) + "\"" + audio_opts_str + " -y \"" + output_filename + 
                               "\" \"" + config->hyper_file_name + "\""; }
-                    else { cmd_str = std::string(FFMPEG_PATH) + " -i \"" + config->input_files[i] + "\"" +
+                    else { cmd_str = std::string(FFMPEG_PATH) + " -i \"" + current_input_file + "\"" +
                               " -af \"" + std::string(filter_complex_a) + "\"" +
                               audio_opts_str + " -y \"" + output_filename + "\""; }
                 }
 
                 log_current_time(log_file);
-                fprintf(log_file, "Run %d: Launching ffmpeg for input: '%s'\n", run, config->input_files[i].c_str());
+                fprintf(log_file, "Run %d: Launching ffmpeg for input: '%s'\n", run, current_input_file.c_str());
                 fflush(log_file);
 
 #ifdef _WIN32
@@ -630,6 +779,12 @@ void run_yolo_process(YoloConfig *config, int seed) {
         waitpid(processes[i], &status, 0);
 #endif
     }
+
+    // Clean up temporary shuffled files
+    for (const auto& temp_file : temp_files_to_delete) {
+        remove(temp_file.c_str());
+    }
+    temp_files_to_delete.clear();
     
     if (config->create_hyper_file=='y') {
         FILE *list = fopen("list.txt", "w");
