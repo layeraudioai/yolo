@@ -7,6 +7,11 @@
 #include <vector>
 #include <iostream>
 #include <limits>
+#include <thread>
+#include <mutex>
+#include <condition_variable>
+#include <queue>
+#include <functional>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -46,7 +51,9 @@ struct YoloConfig {
         quality(-1),
         video_output_extension("mkv"),
         video_res(),
-        video_fps(),
+        width(7680),
+        height(4320),
+        video_fps("480"),
         audio_output_extension("mp3"),
         audio_output_extension_is_default(true),
         runNumber_is_default(true),
@@ -80,7 +87,10 @@ struct YoloConfig {
     int quality;
     std::string video_output_extension;
     std::string video_res;
+    int width;
+    int height;
     std::string video_fps;
+    float fps = 480.0f;
     std::string audio_output_extension;
     bool audio_output_extension_is_default;
     bool runNumber_is_default;
@@ -99,3 +109,35 @@ int get_audio_channel_count(const std::string& filename, FILE* log_file);
 std::string get_basename(const std::string& path);
 void print_help(const char* app_name);
 template<typename T> void prompt_for_value (const std::string& prompt, T& value);
+std::vector<std::string> expand_wildcards(const std::string& path_pattern);
+
+#define MAX_PROCESSES (MAX_FILES * 10)
+
+// A simple thread pool for running tasks in parallel.
+class ThreadPool {
+public:
+    ThreadPool(size_t num_threads);
+    ~ThreadPool();
+
+    template<class F, class... Args>
+    void enqueue(F&& f, Args&&... args);
+
+private:
+    std::vector<std::thread> workers;
+    std::queue<std::function<void()>> tasks;
+
+    std::mutex queue_mutex;
+    std::condition_variable condition;
+    bool stop;
+};
+
+// Template implementation must be in the header file.
+template<class F, class... Args>
+void ThreadPool::enqueue(F&& f, Args&&... args) {
+    auto task = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        tasks.emplace(task);
+    }
+    condition.notify_one();
+}

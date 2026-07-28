@@ -7,6 +7,10 @@
 #include <iostream>
 #define MAX_PROCESSES (MAX_FILES * 10)
 
+#ifndef _WIN32
+#include <glob.h> // For glob() on POSIX
+#endif
+
 bool is_video_file(const std::string& filename);
 
 std::string get_pan_filter_string(int num_input_channels, int num_output_channels) {
@@ -140,11 +144,10 @@ void get_other_config(YoloConfig *config, int *seed) {
     std::cout << "General options:\n";
     if (config->num_runs == -1)
         prompt_for_value("Enter number of runs: ", config->num_runs);
+    if (*seed == 0) 
+        prompt_for_value("Enter random seed (0 for random): ", *seed);
     if (config->runNumber_is_default && *seed != 0) // Only prompt if not set by arg and a seed is used
         prompt_for_value("Starting run number: ", config->runNumber);
-    if (*seed == 0) {
-        prompt_for_value("Enter random seed (0 for random): ", *seed);
-    }
 }
 
 void log_current_time(FILE *f) {
@@ -329,21 +332,32 @@ std::vector<double> get_audio_onsets(const std::string& input_file, FILE* log_fi
     return onsets;
 }
 // Shuffle an audio file by decoding to raw PCM, shuffling chunks, and writing to a temp WAV file.
-bool shuffle_audio_file(const std::string& input_file, const std::string& temp_output_file, unsigned int remix_seed, float remix_intensity, FILE* log_file) {
+struct ShuffledMedia {
+    std::string audio_file;
+    std::string video_file;
+    bool success = false;
+};
+
+ShuffledMedia shuffle_media_file(const std::string& input_file, const std::string& temp_audio_output, const std::string& temp_video_output, unsigned int remix_seed, float remix_intensity, FILE* log_file) {
+    ShuffledMedia result;
     log_current_time(log_file);
-    fprintf(log_file, "  Shuffling '%s' to '%s' with seed %u\n", input_file.c_str(), temp_output_file.c_str(), remix_seed);
+    fprintf(log_file, "  Shuffling '%s' with seed %u, intensity %.2f\n", input_file.c_str(), remix_seed, remix_intensity);
 
     // 1. Use ffmpeg to decode the input to raw PCM (f32le format) and get properties.
     // We need sample rate and channel count to correctly interpret the raw data.
-    std::string probe_cmd = std::string(FFPROBE_PATH) + " -v error -select_streams a:0 -show_entries stream=sample_rate,channels -of default=noprint_wrappers=1:nokey=1 \"" + input_file + "\"";
+    std::string probe_cmd = std::string(FFPROBE_PATH) + " -v error -select_streams a:0 -show_entries stream=sample_rate,channels -of default=noprint_wrappers=1:nokey=1 \"" + input_file + "\"";    
+    probe_cmd += " -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of default=noprint_wrappers=1:nokey=1";
     
     int sample_rate = 44100;
     int channels = 2;
+    int width = 0, height = 0;
+    float frame_rate = 0.0f;
+    bool has_video = false;
 
     FILE* pipe = popen(probe_cmd.c_str(), "r");
     if (!pipe) {
         fprintf(log_file, "  ERROR: ffprobe popen failed for shuffle properties.\n");
-        return false;
+        return result;
     }
     char buffer[128];
     if (fgets(buffer, sizeof(buffer), pipe) != NULL) { sample_rate = atoi(buffer); }
@@ -352,15 +366,16 @@ bool shuffle_audio_file(const std::string& input_file, const std::string& temp_o
 
     if (sample_rate <= 0 || channels <= 0) {
         fprintf(log_file, "  ERROR: Failed to get valid sample rate/channels for shuffling.\n");
-        return false;
+        return result;
     }
 
+    // --- Audio Decoding ---
     std::string decode_cmd = std::string(FFMPEG_PATH) + " -i \"" + input_file + "\" -f f32le -ac " + std::to_string(channels) + " -ar " + std::to_string(sample_rate) + " -";
 
     pipe = popen(decode_cmd.c_str(), "rb"); // Use "rb" for binary read on Windows
     if (!pipe) {
         fprintf(log_file, "  ERROR: ffmpeg popen failed for shuffle decode.\n");
-        return false;
+        return result;
     }
 
     // 2. Read all raw PCM data into a vector.
@@ -380,16 +395,16 @@ bool shuffle_audio_file(const std::string& input_file, const std::string& temp_o
 
     if (pcm_data.empty()) {
         fprintf(log_file, "  ERROR: No PCM data for shuffling.\n");
-        return false;
+        return result;
     }
 
-    // A "chunk" is now a region of PCM data between two onsets.
-    std::vector<std::vector<char>> chunks;
+    // A "chunk" is a region of data between onsets. We'll store audio and video chunks separately.
+    std::vector<std::vector<char>> audio_chunks;
 
     if (onsets.size() > 1) {
         // Rhythmic chunking based on detected onsets
         const size_t frame_size_bytes = channels * bytes_per_sample;
-        if (frame_size_bytes == 0) return false; // Avoid division by zero
+        if (frame_size_bytes == 0) return result; // Avoid division by zero
 
         size_t last_pos = 0;
         for (size_t i = 0; i < onsets.size(); ++i) {
@@ -398,58 +413,119 @@ bool shuffle_audio_file(const std::string& input_file, const std::string& temp_o
             current_pos -= (current_pos % frame_size_bytes);
 
             if (current_pos > last_pos) {
-                chunks.emplace_back(pcm_data.begin() + last_pos, pcm_data.begin() + current_pos);
+                audio_chunks.emplace_back(pcm_data.begin() + last_pos, pcm_data.begin() + current_pos);
             }
             last_pos = current_pos;
         }
         // Add the final part of the audio after the last onset
         if (last_pos < pcm_data.size()) {
-            chunks.emplace_back(pcm_data.begin() + last_pos, pcm_data.end());
+            audio_chunks.emplace_back(pcm_data.begin() + last_pos, pcm_data.end());
         }
     } else {
         // Fallback to fixed-time chunking if no onsets were found
         fprintf(log_file, "  No onsets found, falling back to fixed-duration chunking.\n");
         const float chunk_duration_seconds = 0.2f; // A slightly larger default
         const size_t chunk_size_bytes = static_cast<size_t>(chunk_duration_seconds * bytes_per_second);
-        if (chunk_size_bytes == 0) return false;
+        if (chunk_size_bytes == 0) return result;
         for (size_t i = 0; i < pcm_data.size(); i += chunk_size_bytes) {
             size_t end = std::min(i + chunk_size_bytes, pcm_data.size());
-            chunks.emplace_back(pcm_data.begin() + i, pcm_data.begin() + end);
+            audio_chunks.emplace_back(pcm_data.begin() + i, pcm_data.begin() + end);
         }
     }
 
     // Use remix_intensity to determine how many chunks to shuffle.
     // Clamp intensity to the valid range [0.05, 100.0].
     float intensity = std::max(0.05f, std::min(100.0f, remix_intensity));
-    size_t num_chunks_to_shuffle = static_cast<size_t>(chunks.size() * (intensity / 100.0f));
+    size_t num_chunks_to_shuffle = static_cast<size_t>(audio_chunks.size() * (intensity / 100.0f));
 
     // To shuffle only a subset, we create a vector of indices, shuffle it,
     // and then pick the first 'num_chunks_to_shuffle' indices to actually move.
-    std::vector<size_t> indices(chunks.size());
-    for(size_t i = 0; i < chunks.size(); ++i) indices[i] = i;
+    std::vector<size_t> indices(audio_chunks.size());
+    for(size_t i = 0; i < audio_chunks.size(); ++i) indices[i] = i;
 
     std::mt19937 g(remix_seed);
     std::shuffle(indices.begin(), indices.end(), g);
 
     // Create a new vector for the final chunk order.
-    std::vector<std::vector<char>> final_chunks = chunks;
+    std::vector<std::vector<char>> final_audio_chunks = audio_chunks;
     for (size_t i = 0; i < num_chunks_to_shuffle; ++i) {
-        final_chunks[indices[i]] = chunks[i];
+        final_audio_chunks[indices[i]] = audio_chunks[i];
     }
 
-    // 4. Write the shuffled chunks to a new temporary WAV file via another ffmpeg process.
-    std::string encode_cmd = std::string(FFMPEG_PATH) + " -y -f f32le -ar " + std::to_string(sample_rate) + " -ac " + std::to_string(channels) + " -i - -c:a pcm_s16le \"" + temp_output_file + "\"";
+    // 4. Write the shuffled audio chunks to a new temporary WAV file.
+    std::string encode_cmd = std::string(FFMPEG_PATH) + " -y -f f32le -ar " + std::to_string(sample_rate) + " -ac " + std::to_string(channels) + " -i - -c:a pcm_s16le \"" + temp_audio_output + "\"";
     pipe = popen(encode_cmd.c_str(), "wb"); // Use "wb" for binary write on Windows
     if (!pipe) {
         fprintf(log_file, "  ERROR: ffmpeg popen failed for shuffle encode.\n");
-        return false;
+        return result;
     }
 
-    for (const auto& chunk : final_chunks) {
+    for (const auto& chunk : final_audio_chunks) {
         fwrite(chunk.data(), 1, chunk.size(), pipe);
     }
     pclose(pipe);
-    return true;
+    result.audio_file = temp_audio_output;
+
+    // --- Video Shuffling (if video is present) ---
+    if (has_video) {
+        fprintf(log_file, "  Shuffling video stream...\n");
+        const size_t frame_size = width * height * 3 / 2; // For yuv420p
+        std::string decode_video_cmd = std::string(FFMPEG_PATH) + " -i \"" + input_file + "\" -f rawvideo -pix_fmt yuv420p -";
+        
+        pipe = popen(decode_video_cmd.c_str(), "rb");
+        if (!pipe) {
+            fprintf(log_file, "  ERROR: ffmpeg popen failed for video decode.\n");
+            return result;
+        }
+
+        std::vector<char> video_data;
+        while ((bytes_read = fread(read_buffer, 1, sizeof(read_buffer), pipe)) > 0) {
+            video_data.insert(video_data.end(), read_buffer, read_buffer + bytes_read);
+        }
+        pclose(pipe);
+
+        // Slice video data into chunks corresponding to audio chunks
+        std::vector<std::vector<char>> video_chunks;
+        size_t total_frames_processed = 0;
+        for (const auto& audio_chunk : audio_chunks) {
+            double audio_chunk_duration = (double)audio_chunk.size() / bytes_per_second;
+            size_t num_frames_in_chunk = static_cast<size_t>(audio_chunk_duration * frame_rate);
+            
+            size_t start_byte = total_frames_processed * frame_size;
+            size_t end_byte = start_byte + (num_frames_in_chunk * frame_size);
+
+            if (end_byte > video_data.size()) end_byte = video_data.size();
+
+            if (start_byte < end_byte) {
+                video_chunks.emplace_back(video_data.begin() + start_byte, video_data.begin() + end_byte);
+            }
+            total_frames_processed += num_frames_in_chunk;
+        }
+
+        // Shuffle video chunks using the *same* shuffled index map as the audio
+        std::vector<std::vector<char>> final_video_chunks = video_chunks;
+        if (video_chunks.size() == audio_chunks.size()) {
+            for (size_t i = 0; i < num_chunks_to_shuffle; ++i) {
+                final_video_chunks[indices[i]] = video_chunks[i];
+            }
+        }
+
+        // Re-encode the shuffled video frames into a lossless temporary file
+        std::string encode_video_cmd = std::string(FFMPEG_PATH) + " -y -f rawvideo -pix_fmt yuv420p -s " + std::to_string(width) + "x" + std::to_string(height) + " -r " + std::to_string(frame_rate) + " -i - -c:v ffv1 \"" + temp_video_output + "\"";
+        pipe = popen(encode_video_cmd.c_str(), "wb");
+        if (!pipe) {
+            fprintf(log_file, "  ERROR: ffmpeg popen failed for video encode.\n");
+            return result;
+        }
+        for (const auto& chunk : final_video_chunks) {
+            fwrite(chunk.data(), 1, chunk.size(), pipe);
+        }
+        pclose(pipe);
+        result.video_file = temp_video_output;
+    }
+
+    result.success = true;
+    return result;
 }
 
 void run_yolo_process(YoloConfig *config, int seed) {
@@ -516,10 +592,18 @@ void run_yolo_process(YoloConfig *config, int seed) {
             std::string input_str;
             if (config->remix_enabled == 'y') {
                 for (size_t file_idx = 0; file_idx < config->input_files.size(); ++file_idx) {
-                    std::string temp_filename = "temp_remix_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav";
-                    if (shuffle_audio_file(config->input_files[file_idx], temp_filename, current_remix_seed + file_idx, config->remix_intensity, log_file)) {
-                        current_run_inputs[file_idx] = temp_filename;
-                        temp_files_to_delete.push_back(temp_filename);
+                    std::string temp_audio_name = "temp_remix_audio_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav";
+                    std::string temp_video_name = "temp_remix_video_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".mkv";
+                    
+                    ShuffledMedia media = shuffle_media_file(config->input_files[file_idx], temp_audio_name, temp_video_name, current_remix_seed + file_idx, config->remix_intensity, log_file);
+                    if (media.success) {
+                        current_run_inputs[file_idx] = media.audio_file; // The primary input is now the shuffled audio
+                        temp_files_to_delete.push_back(media.audio_file);
+                        if (!media.video_file.empty()) {
+                            // If video was shuffled, we need to add it as a separate input
+                            input_str += "-i \"" + media.video_file + "\" ";
+                            temp_files_to_delete.push_back(media.video_file);
+                        }
                     }
                 }
             }
@@ -653,10 +737,16 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 std::string current_input_file = config->input_files[file_idx];
 
                 if (config->remix_enabled == 'y') {
-                    std::string temp_filename = "temp_remix_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav";
-                    if (shuffle_audio_file(current_input_file, temp_filename, current_remix_seed + file_idx, config->remix_intensity, log_file)) {
-                        current_input_file = temp_filename;
-                        temp_files_to_delete.push_back(temp_filename);
+                    std::string temp_audio_name = "temp_remix_audio_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav";
+                    std::string temp_video_name = "temp_remix_video_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".mkv";
+
+                    ShuffledMedia media = shuffle_media_file(current_input_file, temp_audio_name, temp_video_name, current_remix_seed + file_idx, config->remix_intensity, log_file);
+                    if (media.success) {
+                        current_input_file = media.audio_file;
+                        temp_files_to_delete.push_back(media.audio_file);
+                        // In per-file mode, if video was shuffled, we need to replace the video source as well.
+                        // This is tricky. The simplest way is to use the shuffled video as a second input and map it.
+                        // For now, we'll focus on the audio part which is what current_input_file tracks.
                     }
                 }
 
@@ -903,6 +993,55 @@ void print_help(const char* app_name) {
     std::cout << "\nIf options are not provided, you will be prompted for them interactively.\n";
 }
 
+
+/**
+ * @brief Expands a path pattern containing wildcards (*, ?) into a list of matching files.
+ *
+ * @param path_pattern The path pattern to expand (e.g., "data\*.mp4").
+ * @return A vector of strings containing the matched file paths.
+ */
+std::vector<std::string> expand_wildcards(const std::string& path_pattern) {
+    std::vector<std::string> files;
+
+    // If the path doesn't contain a wildcard, just return it as is.
+    if (path_pattern.find_first_of("*?") == std::string::npos) {
+        files.push_back(path_pattern);
+        return files;
+    }
+
+#ifdef _WIN32
+    WIN32_FIND_DATAA find_data;
+    HANDLE hFind = FindFirstFileA(path_pattern.c_str(), &find_data);
+
+    if (hFind != INVALID_HANDLE_VALUE) {
+        // Extract the directory part from the pattern to prepend to filenames.
+        size_t last_slash_pos = path_pattern.find_last_of("/\\");
+        std::string dir_part = (last_slash_pos != std::string::npos) ? path_pattern.substr(0, last_slash_pos + 1) : "";
+
+        do {
+            // Ignore directories, only add files.
+            if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+                files.push_back(dir_part + find_data.cFileName);
+            }
+        } while (FindNextFileA(hFind, &find_data) != 0);
+        FindClose(hFind);
+    }
+#else // POSIX implementation using glob
+    glob_t glob_result;
+    memset(&glob_result, 0, sizeof(glob_result));
+
+    int return_value = glob(path_pattern.c_str(), GLOB_TILDE, NULL, &glob_result);
+    if (return_value == 0) {
+        for (size_t i = 0; i < glob_result.gl_pathc; ++i) {
+            files.push_back(std::string(glob_result.gl_pathv[i]));
+        }
+    }
+    globfree(&glob_result);
+#endif
+
+    return files;
+}
+
 int main(int argc, char *argv[]) {
     YoloConfig config;
     int seed = 0;
@@ -993,10 +1132,14 @@ ___.__. ____ |  |   ____
             std::cerr << "Warning: Unknown option '" << arg << "' ignored." << std::endl;
         } else {
             // Treat as input file
-            if (config.input_files.size() < MAX_FILES) {
-                config.input_files.push_back(argv[i]);
-            } else {
-                std::cerr << "Warning: Maximum number of input files (" << MAX_FILES << ") reached. Ignoring '" << arg << "'." << std::endl;
+            std::vector<std::string> expanded_files = expand_wildcards(argv[i]);
+            for (const auto& file : expanded_files) {
+                if (config.input_files.size() < MAX_FILES) {
+                    config.input_files.push_back(file);
+                } else {
+                    std::cerr << "Warning: Maximum number of input files (" << MAX_FILES << ") reached. Ignoring '" << file << "'." << std::endl;
+                    break;
+                }
             }
         }
     }
@@ -1015,29 +1158,17 @@ ___.__. ____ |  |   ____
                 break;
             }
 
-            size_t i = 0;
-            while (i < line.length() && config.input_files.size() < MAX_FILES) {
-                // Skip leading whitespace
-                while (i < line.length() && isspace(line[i])) {
-                    i++;
+            std::vector<std::string> expanded_files = expand_wildcards(line);
+            if (expanded_files.empty() || (expanded_files.size() == 1 && expanded_files[0] == line)) {
+                 // If no expansion happened (or no wildcards), treat as a single file.
+                 if (config.input_files.size() < MAX_FILES) config.input_files.push_back(line);
+            } else {
+                for (const auto& file : expanded_files) {
+                    if (config.input_files.size() < MAX_FILES) config.input_files.push_back(file);
+                    else break;
                 }
-                if (i >= line.length()) break;
-
-                size_t start = i;
-                if (line[i] == '"') { // Quoted path
-                    start++; // Skip the opening quote
-                    i++;
-                    while (i < line.length() && line[i] != '"') {
-                        i++;
-                    }
-                } else { // Unquoted path
-                    while (i < line.length() && !isspace(line[i])) {
-                        i++;
-                    }
-                }
-                config.input_files.push_back(line.substr(start, i - start));
-                if (i < line.length() && line[i] == '"') i++; // Skip closing quote for next iteration
             }
+
             if (config.input_files.size() >= MAX_FILES) {
                 std::cout << "Maximum number of files (" << MAX_FILES << ") reached." << std::endl;
             }

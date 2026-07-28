@@ -15,7 +15,7 @@ clean:
 	rm *.exe 
 
 install:
-	cp yolo.exe /bin
-	cp yolo.exe /usr/bin
-	cp yolo.exe c:\yolo
+	cp yolo.exe /bin 
+	cp yolo.exe /usr/bin 
+	cp yolo.exe c:\yolo 
 	
