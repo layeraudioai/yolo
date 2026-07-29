@@ -1,15 +1,4 @@
 #include "yolo_core.hpp"
-#include <sstream>
-#include <iterator>
-#include <iomanip>
-#include <random>
-#include <algorithm>
-#include <iostream>
-#define MAX_PROCESSES (MAX_FILES * 10)
-
-#ifndef _WIN32
-#include <glob.h> // For glob() on POSIX
-#endif
 
 bool is_video_file(const std::string& filename);
 
@@ -98,6 +87,8 @@ void get_other_config(YoloConfig *config, int *seed) {
     if (config->remix_enabled=='y') {
         if (config->remix_seed == 0)
             prompt_for_value("Enter remix seed (0 for random): ", config->remix_seed);
+        else if (config->remix_seed == -1) // Use -1 to signify 'not set by user'
+            prompt_for_value("Enter remix seed (0 for random): ", config->remix_seed);
         if (config->remix_intensity == -1.0f)
             prompt_for_value("Enter remix intensity (0.05-100): ", config->remix_intensity);
     }
@@ -117,11 +108,17 @@ void get_other_config(YoloConfig *config, int *seed) {
     // Prompt for audio extension only if it wasn't set via command-line argument.
     if (config->audio_output_extension_is_default)
         prompt_for_value("Enter audio output extension (e.g., mp3, ogg): ", config->audio_output_extension);
+
+    // Prompt for MIDI/SF2 if not provided
+    if (config->sf2_path.empty())
+        prompt_for_value("Enter path to SF2 SoundFont (or leave blank): ", config->sf2_path);
+    if (!config->sf2_path.empty() && config->midi_path.empty())
+        prompt_for_value("Enter path to MIDI file (or leave blank): ", config->midi_path);
    
     // Check if there are any video files before asking for video-specific options.
     bool has_video_files = false;
     for (const auto& file : config->input_files) {
-        if (is_video_file(file)) {
+        if (has_video_stream(file, config, nullptr)) { // log_file is not available here
             has_video_files = true;
             break;
         }
@@ -142,6 +139,10 @@ void get_other_config(YoloConfig *config, int *seed) {
             prompt_for_value("Enter video output framerate (e.g., 30): ", config->video_fps);
     }
     std::cout << "General options:\n";
+    if (config->output_dir.empty()) {
+        prompt_for_value("Enter output directory (leave blank for current): ", config->output_dir);
+    }
+
     if (config->num_runs == -1)
         prompt_for_value("Enter number of runs: ", config->num_runs);
     if (*seed == 0) 
@@ -180,39 +181,86 @@ std::vector<char*> get_argv(const std::string& cmd, std::vector<std::string>& st
 }
 #endif
 
-
-// Helper function to check for common video file extensions (case-insensitive)
-bool is_video_file(const std::string& filename) {
-    size_t dot_pos = filename.find_last_of(".");
-    if (dot_pos == std::string::npos) {
-        return false; // No extension
+/**
+ * @brief Checks if a media file contains a video stream using ffprobe. Caches results.
+ *
+ * This is more reliable than checking extensions, as it correctly identifies
+ * audio files with embedded cover art as having a video stream.
+ *
+ * @param filename The path to the media file.
+ * @param config Pointer to the YoloConfig object for caching.
+ * @param log_file Optional file pointer for logging. Can be nullptr.
+ * @return true if a video stream is detected, false otherwise.
+ */
+bool has_video_stream(const std::string& filename, YoloConfig* config, FILE* log_file) {
+    // Check cache first
+    auto it = config->video_stream_cache.find(filename);
+    if (it != config->video_stream_cache.end()) {
+        return it->second;
     }
 
-    std::string ext = filename.substr(dot_pos + 1);
-    // Convert to lower case for comparison
-    std::transform(ext.begin(), ext.end(), ext.begin(),
-                   [](unsigned char c){ return std::tolower(c); });
+    std::string command = std::string(FFPROBE_PATH) + " -v error -select_streams v:0 -show_entries stream=codec_type -of default=noprint_wrappers=1:nokey=1 \"" + filename + "\"";
+    std::string output;
+    bool result = false;
 
-    const std::vector<std::string> video_extensions = {
-        "mp4", "avi", "mkv", "mov", "wmv", "flv", "webm", "mpeg", "mpg"
-    };
+    FILE* pipe = popen(command.c_str(), "r");
+    if (!pipe) {
+        if (log_file) fprintf(log_file, "  ERROR: popen failed for video stream detection on '%s'.\n", filename.c_str());
+        // Cache and return false on error to avoid retrying
+        config->video_stream_cache[filename] = false;
+        return false;
+    }
 
-    for (const auto& video_ext : video_extensions) {
-        if (ext == video_ext) {
-            return true;
+    char buffer[128];
+    if (fgets(buffer, sizeof(buffer), pipe) != NULL) {
+        output = buffer;
+        // ffprobe will output "video\n" if a video stream is found.
+        if (output.find("video") != std::string::npos) {
+            result = true;
         }
     }
-    return false;
+    pclose(pipe);
+
+    // Store result in cache
+    config->video_stream_cache[filename] = result;
+    return result;
 }
 
+/**
+ * @brief Joins a directory path and a filename, ensuring correct path separators.
+ *
+ * @param dir The directory path. Can be empty.
+ * @param filename The name of the file.
+ * @return The combined path.
+ */
+std::string join_path(const std::string& dir, const std::string& filename) {
+    if (dir.empty()) {
+        return filename;
+    }
 #ifdef _WIN32
-// Define the path to ffmpeg.exe. This is more robust than relying on PATH.
-const char* FFMPEG_PATH = "ffmpeg.exe";
-const char* FFPROBE_PATH = "ffprobe.exe";
+    const char separator = '\\';
 #else
-const char* FFMPEG_PATH = "ffmpeg";
-const char* FFPROBE_PATH = "ffprobe";
+    const char separator = '/';
 #endif
+    if (dir.back() == '/' || dir.back() == '\\') {
+        return dir + filename;
+    }
+    return dir + separator + filename;
+}
+
+/**
+ * @brief Ensures that the specified directory exists.
+ *
+ * @param path The directory path to check and create if necessary.
+ */
+void ensure_directory_exists(const std::string& path) {
+    if (path.empty()) {
+        return;
+    }
+    // This is a simple implementation. For nested directories, a more robust
+    // solution (like std::filesystem::create_directories in C++17) would be needed.
+    MKDIR(path.c_str());
+}
 
 // Helper to extract filename from a full path
 std::string get_basename(const std::string& path) {
@@ -343,26 +391,41 @@ ShuffledMedia shuffle_media_file(const std::string& input_file, const std::strin
     log_current_time(log_file);
     fprintf(log_file, "  Shuffling '%s' with seed %u, intensity %.2f\n", input_file.c_str(), remix_seed, remix_intensity);
 
-    // 1. Use ffmpeg to decode the input to raw PCM (f32le format) and get properties.
-    // We need sample rate and channel count to correctly interpret the raw data.
-    std::string probe_cmd = std::string(FFPROBE_PATH) + " -v error -select_streams a:0 -show_entries stream=sample_rate,channels -of default=noprint_wrappers=1:nokey=1 \"" + input_file + "\"";    
-    probe_cmd += " -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of default=noprint_wrappers=1:nokey=1";
-    
+    // 1. Get media properties using separate, targeted ffprobe commands to avoid ambiguity.
     int sample_rate = 44100;
     int channels = 2;
     int width = 0, height = 0;
     float frame_rate = 0.0f;
-    bool has_video = false;
-
-    FILE* pipe = popen(probe_cmd.c_str(), "r");
+    std::vector<std::string> temp_files_to_delete;
+    // --- Probe for Audio Properties ---
+    std::string audio_probe_cmd = std::string(FFPROBE_PATH) + " -v error -select_streams a:0 -show_entries stream=sample_rate,channels -of default=noprint_wrappers=1:nokey=1 \"" + input_file + "\"";
+    FILE* pipe = popen(audio_probe_cmd.c_str(), "r");
     if (!pipe) {
-        fprintf(log_file, "  ERROR: ffprobe popen failed for shuffle properties.\n");
+        fprintf(log_file, "  ERROR: ffprobe popen failed for audio properties.\n");
         return result;
     }
     char buffer[128];
     if (fgets(buffer, sizeof(buffer), pipe) != NULL) { sample_rate = atoi(buffer); }
     if (fgets(buffer, sizeof(buffer), pipe) != NULL) { channels = atoi(buffer); }
     pclose(pipe);
+
+    // --- Probe for Video Properties (if a video stream exists) ---
+    // We must pass a YoloConfig object to has_video_stream for caching.
+    // Since we don't have the main one, we create a temporary one. This is acceptable
+    // as its cache will just be discarded after this function.
+    YoloConfig temp_config_for_probe;
+    bool has_video = has_video_stream(input_file, &temp_config_for_probe, log_file);
+
+    if (has_video) {
+        std::string video_probe_cmd = std::string(FFPROBE_PATH) + " -v error -select_streams v:0 -show_entries stream=width,height,r_frame_rate -of default=noprint_wrappers=1:nokey=1 \"" + input_file + "\"";
+        pipe = popen(video_probe_cmd.c_str(), "r");
+        if (pipe) {
+            if (fgets(buffer, sizeof(buffer), pipe) != NULL) { width = atoi(buffer); }
+            if (fgets(buffer, sizeof(buffer), pipe) != NULL) { height = atoi(buffer); }
+            if (fgets(buffer, sizeof(buffer), pipe) != NULL) { frame_rate = std::stof(buffer); }
+            pclose(pipe);
+        }
+    }
 
     if (sample_rate <= 0 || channels <= 0) {
         fprintf(log_file, "  ERROR: Failed to get valid sample rate/channels for shuffling.\n");
@@ -450,19 +513,69 @@ ShuffledMedia shuffle_media_file(const std::string& input_file, const std::strin
     std::vector<std::vector<char>> final_audio_chunks = audio_chunks;
     for (size_t i = 0; i < num_chunks_to_shuffle; ++i) {
         final_audio_chunks[indices[i]] = audio_chunks[i];
-    }
+    }    
 
-    // 4. Write the shuffled audio chunks to a new temporary WAV file.
-    std::string encode_cmd = std::string(FFMPEG_PATH) + " -y -f f32le -ar " + std::to_string(sample_rate) + " -ac " + std::to_string(channels) + " -i - -c:a pcm_s16le \"" + temp_audio_output + "\"";
-    pipe = popen(encode_cmd.c_str(), "wb"); // Use "wb" for binary write on Windows
-    if (!pipe) {
-        fprintf(log_file, "  ERROR: ffmpeg popen failed for shuffle encode.\n");
+    // 4. Process and write the shuffled (and now transformed) audio chunks to a new temporary WAV file.
+    // We will pipe each chunk to a separate ffmpeg process for transformation.
+    // The final output will be a concatenation of these processed chunks.    
+    std::string final_concat_list_path = "temp_concat_list_" + std::to_string(remix_seed) + ".txt";
+    FILE* concat_list_file = fopen(final_concat_list_path.c_str(), "w");
+    if (!concat_list_file) {
+        fprintf(log_file, "  ERROR: Could not create temporary concat list file.\n");
         return result;
     }
 
+    temp_files_to_delete.push_back(final_concat_list_path); // Make sure we clean this up
+
+    fprintf(log_file, "  Applying transformations to audio chunks...\n");
     for (const auto& chunk : final_audio_chunks) {
-        fwrite(chunk.data(), 1, chunk.size(), pipe);
+        std::string temp_chunk_file = "temp_chunk_" + std::to_string(remix_seed) + "_" + std::to_string(rand()) + ".wav";
+        temp_files_to_delete.push_back(temp_chunk_file); // And this
+
+        // Decide if we should apply a filter to this chunk.
+        // The chance increases with intensity.
+        float transform_chance = intensity / 100.0f;
+        std::string filter_chain;
+
+        if (((float)rand() / RAND_MAX) < transform_chance) {
+            int choice = rand() % 5;
+            if (choice == 0) { // Pitch Shift
+                float semitones[] = {-12.0f, -7.0f, -5.0f, 5.0f, 7.0f, 12.0f};
+                float pitch_shift = semitones[rand() % 6];
+                filter_chain = "asetrate=" + std::to_string(sample_rate * pow(2.0, pitch_shift / 12.0)) + ",atempo=" + std::to_string(1.0 / pow(2.0, pitch_shift / 12.0));
+            } else if (choice == 1) { // Reverse
+                filter_chain = "areverse";
+            } else if (choice == 2) { // Vibrato/Tremolo
+                filter_chain = (rand() % 2 == 0) ? "vibrato=f=5.0:d=0.5" : "tremolo=f=10.0:d=0.7";
+            } else if (choice == 3) { // Add synthetic tone
+                float freq = 220.0f * pow(2.0, (rand() % 24) / 12.0); // Random note in a 2-octave range
+                filter_chain = "asplit[main][ov];[ov]sine=f=" + std::to_string(freq) + ":d=999,volume=0.2[tone];[main][tone]amix";
+            } else { // Time stretch
+                filter_chain = (rand() % 2 == 0) ? "atempo=2.0" : "atempo=0.5";
+            }
+        }
+
+        std::string process_chunk_cmd = std::string(FFMPEG_PATH) + " -y -f f32le -ar " + std::to_string(sample_rate) + " -ac " + std::to_string(channels) + " -i - ";
+        if (!filter_chain.empty()) {
+            process_chunk_cmd += "-af \"" + filter_chain + "\" ";
+        }
+        process_chunk_cmd += "-c:a pcm_s16le \"" + temp_chunk_file + "\"";
+
+        pipe = popen(process_chunk_cmd.c_str(), "wb");
+        if (pipe) {
+            fwrite(chunk.data(), 1, chunk.size(), pipe);
+            pclose(pipe);
+            fprintf(concat_list_file, "file '%s'\n", temp_chunk_file.c_str());
+        }
     }
+    fclose(concat_list_file);
+
+    // 5. Concatenate all the processed temporary chunk files into the final shuffled audio file.
+    std::string concat_cmd = std::string(FFMPEG_PATH) + " -y -f concat -safe 0 -i \"" + final_concat_list_path + "\" -c copy \"" + temp_audio_output + "\"";
+    log_current_time(log_file);
+    fprintf(log_file, "  Concatenating transformed chunks into '%s'\n", temp_audio_output.c_str());
+    system(concat_cmd.c_str());
+
     pclose(pipe);
     result.audio_file = temp_audio_output;
 
@@ -529,10 +642,15 @@ ShuffledMedia shuffle_media_file(const std::string& input_file, const std::strin
 }
 
 void run_yolo_process(YoloConfig *config, int seed) {
+    std::vector<std::string> temp_files_to_delete;
 
-    FILE *log_file = fopen("yolo.log", "a");
+    // Ensure the output directory exists before proceeding.
+    ensure_directory_exists(config->output_dir);
+
+    std::string log_path = join_path(config->output_dir, "yolo.log");
+    FILE *log_file = fopen(log_path.c_str(), "a");
     if (!log_file) {
-        fprintf(stderr, "Failed to open yolo.log for writing.\n");
+        fprintf(stderr, "Failed to open log file '%s' for writing.\n", log_path.c_str());
         return;
     }
 
@@ -543,7 +661,6 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
     ProcessHandle processes[MAX_PROCESSES];
     int process_count = 0;
-    std::vector<std::string> temp_files_to_delete;
 
     for (int i = 0; i < config->num_runs; i++) {
         int run = config->runNumber + i;
@@ -557,6 +674,25 @@ void run_yolo_process(YoloConfig *config, int seed) {
         unsigned int current_remix_seed = (config->remix_seed == 0) ? (unsigned int)time(NULL) + run : config->remix_seed + run;
 
         // Recalculate randomized parameters for each run
+        // Use a more robust random number generator for floats
+        std::mt19937 rng(current_seed);
+        std::uniform_real_distribution<float> dist_wide(0.0f, 1.0f);
+        std::uniform_real_distribution<float> dist_narrow(0.0f, 1.0f);
+
+        config->brightness = config->brightnessTarget + (dist_narrow(rng) * 0.5f) - 0.25f;
+        config->contrast = config->contrastTarget + (dist_narrow(rng) * 0.5f) - 0.25f;
+        config->saturation = config->saturationTarget + (dist_narrow(rng) * 0.5f) - 0.25f;
+        config->volume = config->volume_lufs + (dist_narrow(rng) * 0.6f) + 0.25f;
+        config->treble = config->treble_gain + (dist_narrow(rng) * 0.5f) - 0.25f;
+        config->bass = config->bass_boost + (dist_wide(rng) * 0.8f) - 0.25f;
+        config->atempo = config->tempo_modifier + (dist_narrow(rng) * 0.5f) - 0.25f;
+        if (config->atempo <= 0) config->atempo = 0.5; // Prevent invalid tempo values
+        config->vtempo = 1.0 / config->atempo;
+
+        log_current_time(log_file); 
+        fprintf(log_file, "Starting Run %d with Mix Seed %u, Remix Seed %u\n", run, current_seed, (config->remix_enabled == 'y' ? current_remix_seed : 0)); fflush(log_file);
+
+        std::vector<std::string> current_run_inputs = config->input_files; // Start with original inputs
         config->brightness = config->brightnessTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
         config->contrast = config->contrastTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
         config->saturation = config->saturationTarget + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
@@ -566,18 +702,32 @@ void run_yolo_process(YoloConfig *config, int seed) {
         config->atempo = config->tempo_modifier + ((float)rand()/(float)RAND_MAX * 0.5) - 0.25;
         config->vtempo = 1.0 / config->atempo;
 
-        log_current_time(log_file); 
-        fprintf(log_file, "Starting Run %d with Mix Seed %u, Remix Seed %u\n", run, current_seed, (config->remix_enabled == 'y' ? current_remix_seed : 0)); fflush(log_file);
+        // --- MIDI Synthesis (if enabled) ---
+        if (!config->midi_path.empty() && !config->sf2_path.empty()) {
+            std::string synth_output_file = join_path(config->output_dir, "temp_synth_audio_" + std::to_string(run) + ".wav");
+            std::string synth_cmd = std::string(FLUIDSYNTH_PATH) + " -ni \"" + config->sf2_path + "\" \"" + config->midi_path + "\" -F \"" + synth_output_file + "\" -r 44100";
+            
+            log_current_time(log_file);
+            fprintf(log_file, "Run %d: Synthesizing MIDI with SoundFont...\n", run);
+            fprintf(log_file, "  Command: %s\n", synth_cmd.c_str());
+            fflush(log_file);
+
+            int synth_status = system(synth_cmd.c_str());
+            if (synth_status == 0) {
+                current_run_inputs.push_back(synth_output_file);
+                temp_files_to_delete.push_back(synth_output_file);
+                fprintf(log_file, "  MIDI synthesis successful. Added '%s' to inputs.\n", synth_output_file.c_str());
+            } else {
+                fprintf(log_file, "  WARNING: fluidsynth command failed with status %d. MIDI will not be included.\n", synth_status);
+            }
+        }
 
         if (config->layer_files=='y') {
             // --- Layered files logic ---
             // A single ffmpeg command per run, with all files as inputs.
-
-            // Check if there are any video files to determine the output container.
             bool has_video_input = false;
-            std::vector<std::string> current_run_inputs = config->input_files; // Start with original inputs
             for (size_t file_idx = 0; file_idx < current_run_inputs.size(); ++file_idx) {
-                if (is_video_file(current_run_inputs[file_idx])) {
+                if (has_video_stream(current_run_inputs[file_idx], config, log_file)) {
                     has_video_input = true;
                     break;
                 }
@@ -586,14 +736,14 @@ void run_yolo_process(YoloConfig *config, int seed) {
             // Determine output filename and extension
             const std::string& output_ext = has_video_input ? config->video_output_extension : config->audio_output_extension;
             char output_filename[512];
-            snprintf(output_filename, sizeof(output_filename), "layered_output_run%d.%s", run, output_ext.c_str());
+            snprintf(output_filename, sizeof(output_filename), "%s", join_path(config->output_dir, "layered_output_run" + std::to_string(run) + "." + output_ext).c_str());
 
             // Build input string: -i "file1" -i "file2" ...
             std::string input_str;
-            if (config->remix_enabled == 'y') {
-                for (size_t file_idx = 0; file_idx < config->input_files.size(); ++file_idx) {
-                    std::string temp_audio_name = "temp_remix_audio_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav";
-                    std::string temp_video_name = "temp_remix_video_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".mkv";
+            if (config->remix_enabled == 'y') { // Remixing original files before layering
+                for (size_t file_idx = 0; file_idx < config->input_files.size(); ++file_idx) { // Only iterate original files
+                    std::string temp_audio_name = join_path(config->output_dir, "temp_remix_audio_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav");
+                    std::string temp_video_name = join_path(config->output_dir, "temp_remix_video_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".mkv");
                     
                     ShuffledMedia media = shuffle_media_file(config->input_files[file_idx], temp_audio_name, temp_video_name, current_remix_seed + file_idx, config->remix_intensity, log_file);
                     if (media.success) {
@@ -619,7 +769,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
             for (size_t i = 0; i < current_run_inputs.size(); ++i) {
                 audio_stream_indices.push_back(i);
-                if (is_video_file(current_run_inputs[i])) {
+                if (has_video_stream(current_run_inputs[i], config, log_file)) {
                     video_stream_indices.push_back(i);
                 }
             }
@@ -638,13 +788,18 @@ void run_yolo_process(YoloConfig *config, int seed) {
 
             // Audio chain
             for (int index : audio_stream_indices) {
-                filter_complex << "[" << index << ":a]";
+                // Apply tempo modification to each audio input *before* merging
+                // This is crucial for keeping remixed and synthesized audio in sync
+                filter_complex << "[" << index << ":a]atempo=" << config->atempo << "[a" << index << "];";
+            }
+            for (int index : audio_stream_indices) {
+                filter_complex << "[a" << index << "]";
             }
             filter_complex << "amerge=inputs=" << audio_stream_indices.size() << "[a_merged];";
             
             std::string pan_filter = get_pan_filter_string(total_input_channels, config->num_audio_channels);
-            filter_complex << "[a_merged]atempo=" << config->atempo
-                           << ",volume=" << config->volume
+            // Tempo is already applied, so we don't apply it again to the merged stream
+            filter_complex << "[a_merged]volume=" << config->volume
                            << ",bass=gain=" << config->bass
                            << ",treble=gain=" << config->treble
                            << "," << pan_filter << "[a_out];";
@@ -694,7 +849,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
             cmd_str += " -y \"";
             cmd_str += output_filename;
             cmd_str += "\"";
-            if (!config->hyper_file_name.empty()) {
+            if (config->create_hyper_file == 'y' && !config->hyper_file_name.empty()) {
                 cmd_str += " \"" +config->hyper_file_name + "\"";
             } 
 
@@ -737,9 +892,9 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 std::string current_input_file = config->input_files[file_idx];
 
                 if (config->remix_enabled == 'y') {
-                    std::string temp_audio_name = "temp_remix_audio_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav";
-                    std::string temp_video_name = "temp_remix_video_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".mkv";
-
+                    std::string temp_audio_name = join_path(config->output_dir, "temp_remix_audio_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav");
+                    std::string temp_video_name = join_path(config->output_dir, "temp_remix_video_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".mkv");
+                    
                     ShuffledMedia media = shuffle_media_file(current_input_file, temp_audio_name, temp_video_name, current_remix_seed + file_idx, config->remix_intensity, log_file);
                     if (media.success) {
                         current_input_file = media.audio_file;
@@ -750,13 +905,14 @@ void run_yolo_process(YoloConfig *config, int seed) {
                     }
                 }
 
-                bool is_video = is_video_file(config->input_files[file_idx]); // Check original for video properties
+                bool is_video = has_video_stream(config->input_files[file_idx], config, log_file); // Check original for video properties
                 const std::string& output_ext = is_video ? config->video_output_extension : config->audio_output_extension;
                 std::string base_filename = get_basename(config->input_files[file_idx]);
                 char output_filename[512];
+                std::string final_output_name = base_filename + "_run" + std::to_string(run) + "_file" + std::to_string(file_idx) + "." + output_ext;
                 // Use %zu for size_t type 'i' to fix format mismatch warning/error.
-                snprintf(output_filename, sizeof(output_filename), "%s_run%d_file%zu.%s",
-                         base_filename.c_str(), run, file_idx, output_ext.c_str());
+                snprintf(output_filename, sizeof(output_filename), "%s",
+                         join_path(config->output_dir, final_output_name).c_str());
 
                 char filter_complex_a[4096];
                 char filter_complex_v[512];
@@ -806,7 +962,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                               (!config->video_res.empty() ? " -s " + config->video_res : "") +
                               (!config->video_fps.empty() ? " -r " + config->video_fps : "") +
                               audio_codec_str +
-                              " -ac " + std::to_string(config->num_audio_channels) +
+                              " -ac " + std::to_string(config->num_audio_channels) + " -y \"" + output_filename + "\"" + 
                               " -y \"" + output_filename + "\" \"" + config->hyper_file_name + "\""; }
                     else { 
                         std::cout << "Using: " << config->hyper_file_name << std::endl;
@@ -818,7 +974,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                               (!config->video_res.empty() ? " -s " + config->video_res : "") +
                               (!config->video_fps.empty() ? " -r " + config->video_fps : "") +
                               audio_codec_str +
-                              " -ac " + std::to_string(config->num_audio_channels) +
+                              " -ac " + std::to_string(config->num_audio_channels) + " -y \"" + output_filename + "\"" +
                               " -y \"" + output_filename + "\""; }
                 } else { // Audio-only file
                     std::string audio_opts_str;
@@ -839,7 +995,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                     }
                     if (config->create_hyper_file=='y') { cmd_str = std::string(FFMPEG_PATH) + " -i \"" +
                               current_input_file + "\"" + " -af \"" +
-                              std::string(filter_complex_a) + "\"" + audio_opts_str + " -y \"" + output_filename + 
+                              std::string(filter_complex_a) + "\"" + audio_opts_str + " -y \"" + output_filename +
                               "\" \"" + config->hyper_file_name + "\""; }
                     else { cmd_str = std::string(FFMPEG_PATH) + " -i \"" + current_input_file + "\"" +
                               " -af \"" + std::string(filter_complex_a) + "\"" +
@@ -900,28 +1056,32 @@ void run_yolo_process(YoloConfig *config, int seed) {
     temp_files_to_delete.clear();
     
     if (config->create_hyper_file=='y') {
-        FILE *list = fopen("list.txt", "w");
+        std::string list_path = join_path(config->output_dir, "list.txt");
+        FILE *list = fopen(list_path.c_str(), "w");
         if (list) {
             for (int i = 0; i < config->num_runs; i++) {
                 int run = config->runNumber + i;
-                for (size_t j = 0; j < config->input_files.size(); j++) {
+                for (size_t j = 0; j < config->input_files.size(); ++j) {
                     if (config->layer_files=='y') {
-                        const std::string& output_ext = is_video_file(config->input_files[0]) ? config->video_output_extension : config->audio_output_extension;
-                        fprintf(list, "file 'layered_output_run%d.%s'\n", run, output_ext.c_str());
+                        const std::string& output_ext = has_video_stream(config->input_files[0], config, log_file) ? config->video_output_extension : config->audio_output_extension;
+                        std::string layered_filename = "layered_output_run" + std::to_string(run) + "." + output_ext;
+                        fprintf(list, "file '%s'\n", join_path(config->output_dir, layered_filename).c_str());
                         break;
                     } else {
-                        const std::string& output_ext = is_video_file(config->input_files[j]) ? config->video_output_extension : config->audio_output_extension;
+                        const std::string& output_ext = has_video_stream(config->input_files[j], config, log_file) ? config->video_output_extension : config->audio_output_extension;
                         std::string base_filename = get_basename(config->input_files[j]);
+                        std::string per_file_filename = base_filename + "_run" + std::to_string(run) + "_file" + std::to_string(j) + "." + output_ext;
                         // Use %zu for size_t type 'j' to fix format mismatch warning/error.
-                        fprintf(list, "file '%s_run%d_file%zu.%s'\n",
-                                base_filename.c_str(), run, j, output_ext.c_str());
+                        fprintf(list, "file '%s'\n",
+                                join_path(config->output_dir, per_file_filename).c_str());
                     }
                 }
             }
             fclose(list);
         }
         
-        std::string concat_cmd_str = std::string(FFMPEG_PATH) + " -f concat -safe 0 -i list.txt -c copy \"" + config->hyper_file_name + "\"";
+        std::string hyper_file_path = join_path(config->output_dir, config->hyper_file_name);
+        std::string concat_cmd_str = std::string(FFMPEG_PATH) + " -f concat -safe 0 -i \"" + list_path + "\" -c copy \"" + hyper_file_path + "\"";
 
         if (!config->hyper_file_name.empty()) {
             log_current_time(log_file);
@@ -956,6 +1116,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 fprintf(log_file, "  fork failed for concatenation.\n");
             }
 #endif
+            remove(list_path.c_str()); // Clean up the list file
         }
     }
     fclose(log_file);
@@ -990,7 +1151,11 @@ void print_help(const char* app_name) {
     std::cout << "  -c, --channels <int>          Set the number of output audio channels.\n";
     std::cout << "  --starting-run <int>        Set the starting run number (default: 1).\n";
     std::cout << "  -s, --seed <int>              Set the random seed (0 for random).\n";
+    std::cout << "  --sf2 <path>                Path to the SF2 SoundFont file for MIDI synthesis.\n";
+    std::cout << "  --output-dir <path>         Set the directory for all output files.\n";
+    std::cout << "  --midi <path>               Path to the MIDI file to synthesize and layer.\n";
     std::cout << "\nIf options are not provided, you will be prompted for them interactively.\n";
+    std::cout << "Note: --sf2 and --midi require 'fluidsynth' to be installed and in your system's PATH.\n";
 }
 
 
@@ -1071,7 +1236,7 @@ ___.__. ____ |  |   ____
         } else if (arg == "--remix-intensity" && i + 1 < argc) {
             config.remix_intensity = std::stof(argv[++i]);
         } else if (arg == "--remix-seed" && i + 1 < argc) {
-            config.remix_seed = std::stoi(argv[++i]);
+            config.remix_seed = std::stoi(argv[++i]); // This will now correctly handle 0
         } else if (arg == "--no-layer-files") {
             config.layer_files = 'n';
         } else if (arg == "--create-hyper-file") {
@@ -1128,6 +1293,12 @@ ___.__. ____ |  |   ____
             config.runNumber_is_default = false;
         } else if ((arg == "-s" || arg == "--seed") && i + 1 < argc) {
             seed = std::stoi(argv[++i]);
+        } else if (arg == "--output-dir" && i + 1 < argc) {
+            config.output_dir = argv[++i];
+        } else if (arg == "--sf2" && i + 1 < argc) {
+            config.sf2_path = argv[++i];
+        } else if (arg == "--midi" && i + 1 < argc) {
+            config.midi_path = argv[++i];
         } else if (arg[0] == '-') {
             std::cerr << "Warning: Unknown option '" << arg << "' ignored." << std::endl;
         } else {
@@ -1182,4 +1353,15 @@ ___.__. ____ |  |   ____
     get_other_config(&config, &seed);
     run_yolo_process(&config, seed);
     return 0;
+}
+
+// Template implementation must be in the header file.
+template<class F, class... Args>
+void ThreadPool::enqueue(F&& f, Args&&... args) {
+    auto task = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
+    {
+        std::unique_lock<std::mutex> lock(queue_mutex);
+        tasks.emplace(task);
+    }
+    condition.notify_one();
 }

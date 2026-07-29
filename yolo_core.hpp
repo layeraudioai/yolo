@@ -1,26 +1,46 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <map>
 #include <string>
 #include <stdbool.h>
 #include <time.h>
 #include <vector>
 #include <iostream>
 #include <limits>
+#include <cmath>
 #include <thread>
 #include <mutex>
 #include <condition_variable>
 #include <queue>
 #include <functional>
+#include <sstream>
+#include <iterator>
+#include <iomanip>
+#include <random>
+#include <algorithm>
+#include <iostream>
+#include <sys/stat.h> // For mkdir
+#define MAX_PROCESSES (MAX_FILES * 10)
 
-#ifdef _WIN32
+#ifdef _WIN32// Define the path to ffmpeg.exe. This is more robust than relying on PATH.
+#include <direct.h> // For _mkdir
+#define MKDIR(path) _mkdir(path)
+const char* FFMPEG_PATH = "ffmpeg.exe";
+const char* FFPROBE_PATH = "ffprobe.exe";
+const char* FLUIDSYNTH_PATH = "fluidsynth.exe";
+#include <glob.h> // For glob() on POSIX
 #include <windows.h>
 typedef HANDLE ProcessHandle;
 #else
+const char* FFMPEG_PATH = "ffmpeg";
+const char* FFPROBE_PATH = "ffprobe";
+const char* FLUIDSYNTH_PATH = "fluidsynth";
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
 typedef pid_t ProcessHandle;
+#define MKDIR(path) mkdir(path, 0777)
 #endif
 
 #define MAX_FILES 100
@@ -33,6 +53,8 @@ struct YoloConfig {
         remix_intensity(-1.0f),
         create_hyper_file('-'),
         hyper_file_name(),
+        midi_path(),
+        sf2_path(),
         bass_boost(-1.0f),
         treble_gain(-1.0f),
         volume_lufs(-1.0f),
@@ -59,7 +81,8 @@ struct YoloConfig {
         runNumber_is_default(true),
         runNumber(1),
         num_runs(-1),
-        num_audio_channels(-1)
+        num_audio_channels(-1),
+        output_dir()
     {}
 
     std::vector<std::string> input_files;
@@ -69,6 +92,8 @@ struct YoloConfig {
     float remix_intensity;
     char create_hyper_file;
     std::string hyper_file_name;
+    std::string midi_path;
+    std::string sf2_path;
     float bass_boost;
     float treble_gain;
     float volume_lufs;
@@ -97,6 +122,11 @@ struct YoloConfig {
     int runNumber;
     int num_runs;
     int num_audio_channels;
+    std::string output_dir;
+
+
+    // Cache for has_video_stream to avoid repeated ffprobe calls
+    std::map<std::string, bool> video_stream_cache;
 };
 
 void get_other_config(YoloConfig *config, int *seed);
@@ -104,16 +134,13 @@ void run_yolo_process(YoloConfig *config, int seed);
 std::string get_pan_filter_string(int num_input_channels, int num_output_channels);
 std::vector<char*> get_argv(const std::string& cmd, std::vector<std::string>& storage);
 void log_current_time(FILE *f) ;
-bool is_video_file(const std::string& filename);
+bool has_video_stream(const std::string& filename, YoloConfig* config, FILE* log_file);
 int get_audio_channel_count(const std::string& filename, FILE* log_file);
 std::string get_basename(const std::string& path);
 void print_help(const char* app_name);
 template<typename T> void prompt_for_value (const std::string& prompt, T& value);
 std::vector<std::string> expand_wildcards(const std::string& path_pattern);
 
-#define MAX_PROCESSES (MAX_FILES * 10)
-
-// A simple thread pool for running tasks in parallel.
 class ThreadPool {
 public:
     ThreadPool(size_t num_threads);
@@ -130,14 +157,3 @@ private:
     std::condition_variable condition;
     bool stop;
 };
-
-// Template implementation must be in the header file.
-template<class F, class... Args>
-void ThreadPool::enqueue(F&& f, Args&&... args) {
-    auto task = std::bind(std::forward<F>(f), std::forward<Args>(args)...);
-    {
-        std::unique_lock<std::mutex> lock(queue_mutex);
-        tasks.emplace(task);
-    }
-    condition.notify_one();
-}
