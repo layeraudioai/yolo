@@ -3,7 +3,7 @@
 beta 1.5
 ---
 
-yolo complete includes:
+yolo aio includes:
 ffmpeg
 ffprobe
 ffplay
