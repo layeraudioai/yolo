@@ -1,3 +1,23 @@
 # yolo
-media randomizer
-beta1.5
+---
+beta 1.5
+---
+
+yolo complete includes:
+ffmpeg
+ffprobe
+ffplay
+fluidsynth
+and
+yolo
+all in one exe
+
+---
+licenses
+---
+https://github.com/FluidSynth/fluidsynth
+https://github.com/FluidSynth/fluidsynth/blob/master/LICENSE
+---
+https://github.com/FFmpeg/FFmpeg
+https://github.com/FFmpeg/FFmpeg/blob/master/LICENSE.md
+---
