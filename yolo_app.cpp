@@ -141,6 +141,10 @@ void get_other_config(YoloConfig *config, int *seed) {
     std::cout << "General options:\n";
     if (config->output_dir.empty()) {
         prompt_for_value("Enter output directory (leave blank for current): ", config->output_dir);
+        // If the user leaves it blank, explicitly set it to "."
+        if (config->output_dir.empty()) {
+            config->output_dir = ".";
+        }
     }
 
     if (config->num_runs == -1)
@@ -149,6 +153,23 @@ void get_other_config(YoloConfig *config, int *seed) {
         prompt_for_value("Enter random seed (0 for random): ", *seed);
     if (config->runNumber_is_default && *seed != 0) // Only prompt if not set by arg and a seed is used
         prompt_for_value("Starting run number: ", config->runNumber);
+}
+
+/**
+ * @brief Trims leading and trailing whitespace and removes quotes from a string.
+ *
+ * @param s The string to trim.
+ */
+void trim_and_unquote(std::string& s) {
+    s.erase(s.begin(), std::find_if(s.begin(), s.end(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    }));
+    s.erase(std::find_if(s.rbegin(), s.rend(), [](unsigned char ch) {
+        return !std::isspace(ch);
+    }).base(), s.end());
+    if (s.length() >= 2 && s.front() == '"' && s.back() == '"') {
+        s = s.substr(1, s.length() - 2);
+    }
 }
 
 void log_current_time(FILE *f) {
@@ -1248,6 +1269,11 @@ ___.__. ____ |  |   ____
             config.create_hyper_file = 'y';
         } else if ((arg == "-r" || arg == "--runs")) {
             if (i + 1 < argc) {
+                // Handle empty string argument for --runs
+                if (strlen(argv[i+1]) == 0) {
+                    std::cerr << "Error: Option '" << arg << "' requires a non-empty integer argument.\n";
+                    return 1;
+                }
                 try {
                     config.num_runs = std::stoi(argv[++i]);
                 } catch (const std::invalid_argument& e) {
@@ -1329,6 +1355,7 @@ ___.__. ____ |  |   ____
                 break;
             }
 
+            trim_and_unquote(line);
             std::vector<std::string> expanded_files = expand_wildcards(line);
             if (expanded_files.empty() || (expanded_files.size() == 1 && expanded_files[0] == line)) {
                  // If no expansion happened (or no wildcards), treat as a single file.
