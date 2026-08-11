@@ -20,15 +20,16 @@
 #include <random>
 #include <algorithm>
 #include <iostream>
+#include <filesystem>
 #include <sys/stat.h> // For mkdir
 #define MAX_PROCESSES (MAX_FILES * 10)
 
 #ifdef _WIN32// Define the path to ffmpeg.exe. This is more robust than relying on PATH.
 #include <direct.h> // For _mkdir
-#define MKDIR(path) _mkdir(path)
-const char* FFMPEG_PATH = "ffmpeg.exe";
-const char* FFPROBE_PATH = "ffprobe.exe";
-const char* FLUIDSYNTH_PATH = "fluidsynth.exe";
+#define MKDIR(path) std::filesystem::create_directories(path)
+const char* FFMPEG_PATH = "ffmpeg";
+const char* FFPROBE_PATH = "ffprobe";
+const char* FLUIDSYNTH_PATH = "fluidsynth";
 #include <glob.h> // For glob() on POSIX
 #include <windows.h>
 typedef HANDLE ProcessHandle;
@@ -40,7 +41,7 @@ const char* FLUIDSYNTH_PATH = "fluidsynth";
 #include <sys/wait.h>
 #include <unistd.h>
 typedef pid_t ProcessHandle;
-#define MKDIR(path) mkdir(path, 0777)
+#define MKDIR(path) std::filesystem::create_directories(path)
 #endif
 
 #define MAX_FILES 100
@@ -78,6 +79,7 @@ struct YoloConfig {
         video_fps("480"),
         audio_output_extension("mp3"),
         audio_output_extension_is_default(true),
+        video_output_extension_is_default(true),
         runNumber_is_default(true),
         runNumber(1),
         num_runs(-1),
@@ -118,6 +120,7 @@ struct YoloConfig {
     float fps = 480.0f;
     std::string audio_output_extension;
     bool audio_output_extension_is_default;
+    bool video_output_extension_is_default;
     bool runNumber_is_default;
     int runNumber;
     int num_runs;

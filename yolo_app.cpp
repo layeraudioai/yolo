@@ -48,20 +48,36 @@ std::string get_pan_filter_string(int num_input_channels, int num_output_channel
     return pan_str;
 }
 
+// Special exception to signal a graceful exit request from a prompt.
+class UserExitException : public std::exception {
+public:
+    const char* what() const noexcept override {
+        return "User requested exit.";
+    }
+};
+
 // Template for reading any type that supports `std::cin >>`
 template<typename T>
 void prompt_for_value(const std::string& prompt, T& value) {
+    std::string line;
     while (true) {
         std::cout << prompt;
-        std::cin >> value;
-        if (std::cin.good()) {
-            // Clear the rest of the line from the input buffer
-            std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+        std::getline(std::cin, line);
+
+        if (line == "exit") {
+            throw UserExitException();
+        }
+
+        // Use a stringstream to attempt conversion from the read line.
+        std::stringstream ss(line);
+        ss >> value;
+
+        // Check if the conversion was successful and the entire string was consumed.
+        if (ss.good() || ss.eof()) {
             break;
         }
+
         std::cout << "Invalid input. Please try again.\n";
-        std::cin.clear();
-        std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     }
 }
 
@@ -69,90 +85,104 @@ void prompt_for_value(const std::string& prompt, T& value) {
 void prompt_for_value(const std::string& prompt, std::string& value) {
     std::cout << prompt;
     std::getline(std::cin, value);
-}
+    if (value == "exit") {
+        throw UserExitException();
+    }
+};
 
 void get_other_config(YoloConfig *config, int *seed) {
-    if (config->layer_files=='-') {
-        prompt_for_value("Generate layered files?: ", config->layer_files);
-    }
-    if (config->create_hyper_file=='-') {
-        prompt_for_value("Create a hyper file?: ", config->create_hyper_file);
-    }
-    if (config->create_hyper_file=='y') {
-        prompt_for_value("Hyper file name?: ", config->hyper_file_name);
-    }
-    if (config->remix_enabled=='-') {
-        prompt_for_value("Enable remixing (sample rearrangement)?: ", config->remix_enabled);
-    }
-    if (config->remix_enabled=='y') {
-        if (config->remix_seed == 0)
-            prompt_for_value("Enter remix seed (0 for random): ", config->remix_seed);
-        else if (config->remix_seed == -1) // Use -1 to signify 'not set by user'
-            prompt_for_value("Enter remix seed (0 for random): ", config->remix_seed);
-        if (config->remix_intensity == -1.0f)
-            prompt_for_value("Enter remix intensity (0.05-100): ", config->remix_intensity);
-    }
-    std::cout << "Audio options:\n";
-    if (config->bass_boost == -1.0f)
-        prompt_for_value("Enter bass boost: ", config->bass_boost);
-    if (config->treble_gain == -1.0f)
-        prompt_for_value("Enter treble gain: ", config->treble_gain);
-    if (config->volume_lufs == -1.0f)
-        prompt_for_value("Enter volume LUFS: ", config->volume_lufs);
-    if (config->tempo_modifier == -1.0f)
-        prompt_for_value("Enter tempo modifier: ", config->tempo_modifier);
-    if (config->quality == -1)
-        prompt_for_value("Enter quality (0[max]-31[lowest]): ", config->quality);
-    if (config->num_audio_channels == -1)
-        prompt_for_value("Enter number of output audio channels: ", config->num_audio_channels);
-    // Prompt for audio extension only if it wasn't set via command-line argument.
-    if (config->audio_output_extension_is_default)
-        prompt_for_value("Enter audio output extension (e.g., mp3, ogg): ", config->audio_output_extension);
-
-    // Prompt for MIDI/SF2 if not provided
-    if (config->sf2_path.empty())
-        prompt_for_value("Enter path to SF2 SoundFont (or leave blank): ", config->sf2_path);
-    if (!config->sf2_path.empty() && config->midi_path.empty())
-        prompt_for_value("Enter path to MIDI file (or leave blank): ", config->midi_path);
-   
-    // Check if there are any video files before asking for video-specific options.
-    bool has_video_files = false;
-    for (const auto& file : config->input_files) {
-        if (has_video_stream(file, config, nullptr)) { // log_file is not available here
-            has_video_files = true;
-            break;
+    try {
+        if (config->layer_files=='-') {
+            prompt_for_value("Generate layered files? (y/n) (or 'exit'): ", config->layer_files);
         }
-    }
-    if (has_video_files) {
-        std::cout << "Video specific options:\n";
-        if (config->brightnessTarget == -1.0f)
-            prompt_for_value("Enter brightness target: ", config->brightnessTarget);
-        if (config->contrastTarget == -1.0f)
-            prompt_for_value("Enter contrast target: ", config->contrastTarget);
-        if (config->saturationTarget == -1.0f)
-            prompt_for_value("Enter saturation target: ", config->saturationTarget);
-        if (config->video_output_extension == "mkv") // Not set by user arg
-            prompt_for_value("Enter video output extension (e.g., mkv, mp4): ", config->video_output_extension);
-        if (config->video_res.empty())
-            prompt_for_value("Enter video output resolution (e.g., 1920x1080): ", config->video_res);
-        if (config->video_fps.empty())
-            prompt_for_value("Enter video output framerate (e.g., 30): ", config->video_fps);
-    }
-    std::cout << "General options:\n";
-    if (config->output_dir.empty()) {
-        prompt_for_value("Enter output directory (leave blank for current): ", config->output_dir);
-        // If the user leaves it blank, explicitly set it to "."
+        if (config->create_hyper_file=='-') {
+            prompt_for_value("Create a hyper file? (y/n) (or 'exit'): ", config->create_hyper_file);
+        }
+        if (config->create_hyper_file=='y') {
+            prompt_for_value("Hyper file name? (or 'exit'): ", config->hyper_file_name);
+        }
+        if (config->remix_enabled=='-') {
+            prompt_for_value("Enable remixing (sample rearrangement)? (y/n) (or 'exit'): ", config->remix_enabled);
+        }
+        if (config->remix_enabled=='y') {
+            if (config->remix_seed == 0)
+                prompt_for_value("Enter remix seed (0 for random) (or 'exit'): ", config->remix_seed);
+            else if (config->remix_seed == -1) // Use -1 to signify 'not set by user'
+                prompt_for_value("Enter remix seed (0 for random) (or 'exit'): ", config->remix_seed);
+            if (config->remix_intensity == -1.0f)
+                prompt_for_value("Enter remix intensity (0.05-100) (or 'exit'): ", config->remix_intensity);
+        }
+        std::cout << "Audio options:\n";
+        if (config->bass_boost == -1.0f)
+            prompt_for_value("Enter bass boost (or 'exit'): ", config->bass_boost);
+        if (config->treble_gain == -1.0f)
+            prompt_for_value("Enter treble gain (or 'exit'): ", config->treble_gain);
+        if (config->volume_lufs == -1.0f)
+            prompt_for_value("Enter volume LUFS (or 'exit'): ", config->volume_lufs);
+        if (config->tempo_modifier == -1.0f)
+            prompt_for_value("Enter tempo modifier (or 'exit'): ", config->tempo_modifier);
+        if (config->quality == -1)
+            prompt_for_value("Enter quality (0[max]-31[lowest]) (or 'exit'): ", config->quality);
+        if (config->num_audio_channels == -1)
+            prompt_for_value("Enter number of output audio channels (or 'exit'): ", config->num_audio_channels);
+        // Prompt for audio extension only if it wasn't set via command-line argument.
+        if (config->audio_output_extension_is_default)
+            prompt_for_value("Enter audio output extension (e.g., mp3, ogg) (or 'exit'): ", config->audio_output_extension);
+
+        // Prompt for MIDI/SF2 if not provided
+        // Only prompt for MIDI/SF2 if MIDI hasn't been explicitly disabled.
+        if (config->midi_path != "disabled") {
+            if (config->midi_path.empty()) {
+                prompt_for_value("Enter path to MIDI file (or leave blank, or 'exit'): ", config->midi_path);
+            }
+            // If a MIDI file is now present (either from CLI or prompt), and no SF2 is set, prompt for SF2.
+            if (!config->midi_path.empty() && config->sf2_path.empty())
+                prompt_for_value("Enter path to SF2 SoundFont (or 'exit'): ", config->sf2_path);
+        }
+    
+        // Check if there are any video files before asking for video-specific options.
+        bool has_video_files = false;
+        for (const auto& file : config->input_files) {
+            if (has_video_stream(file, config, nullptr)) { // log_file is not available here
+                has_video_files = true;
+                break;
+            }
+        }
+        if (has_video_files) {
+            std::cout << "Video specific options:\n";
+            if (config->brightnessTarget == -1.0f)
+                prompt_for_value("Enter brightness target (or 'exit'): ", config->brightnessTarget);
+            if (config->contrastTarget == -1.0f)
+                prompt_for_value("Enter contrast target (or 'exit'): ", config->contrastTarget);
+            if (config->saturationTarget == -1.0f)
+                prompt_for_value("Enter saturation target (or 'exit'): ", config->saturationTarget);
+            if (config->video_output_extension == "mkv") // Not set by user arg
+                prompt_for_value("Enter video output extension (e.g., mkv, mp4) (or 'exit'): ", config->video_output_extension);
+            if (config->video_res.empty())
+                prompt_for_value("Enter video output resolution (e.g., 1920x1080) (or 'exit'): ", config->video_res);
+            if (config->video_fps.empty())
+                prompt_for_value("Enter video output framerate (e.g., 30) (or 'exit'): ", config->video_fps);
+        }
+        std::cout << "General options:\n";
         if (config->output_dir.empty()) {
-            config->output_dir = ".";
+            prompt_for_value("Enter output directory (leave blank for current, or 'exit'): ", config->output_dir);
+            // If the user leaves it blank, explicitly set it to "."
+            if (config->output_dir.empty()) {
+                config->output_dir = ".";
+            }
         }
-    }
 
-    if (config->num_runs == -1)
-        prompt_for_value("Enter number of runs: ", config->num_runs);
-    if (*seed == 0) 
-        prompt_for_value("Enter random seed (0 for random): ", *seed);
-    if (config->runNumber_is_default && *seed != 0) // Only prompt if not set by arg and a seed is used
-        prompt_for_value("Starting run number: ", config->runNumber);
+        if (config->num_runs == -1)
+            prompt_for_value("Enter number of runs (or 'exit'): ", config->num_runs);
+        if (*seed == 0) 
+            prompt_for_value("Enter random seed (0 for random) (or 'exit'): ", *seed);
+        if (config->runNumber_is_default && *seed != 0) // Only prompt if not set by arg and a seed is used
+            prompt_for_value("Starting run number (or 'exit'): ", config->runNumber);
+
+    } catch (const UserExitException&) {
+        // Re-throw to be caught by main
+        throw;
+    }
 }
 
 /**
@@ -173,6 +203,7 @@ void trim_and_unquote(std::string& s) {
 }
 
 void log_current_time(FILE *f) {
+    if (!f) return; // Prevent crash if log file is not open
     time_t now = time(NULL);
 #ifdef _WIN32
     struct tm t;
@@ -254,19 +285,27 @@ bool has_video_stream(const std::string& filename, YoloConfig* config, FILE* log
  * @param filename The name of the file.
  * @return The combined path.
  */
+#include <algorithm> // Needed for std::replace
+
 std::string join_path(const std::string& dir, const std::string& filename) {
     if (dir.empty()) {
         return filename;
     }
-#ifdef _WIN32
-    const char separator = '\\';
-#else
-    const char separator = '/';
-#endif
-    if (dir.back() == '/' || dir.back() == '\\') {
-        return dir + filename;
+    
+    std::string f = filename;
+    // Remove leading separator if present, so it's not treated as absolute
+    if (!f.empty() && (f[0] == '/' || f[0] == '\\')) {
+        f = f.substr(1);
     }
-    return dir + separator + filename;
+    
+    std::filesystem::path p(dir);
+    p /= f;
+    
+    std::string res = p.string();
+#ifdef _WIN32
+    std::replace(res.begin(), res.end(), '/', '\\');
+#endif
+    return res;
 }
 
 /**
@@ -294,6 +333,7 @@ std::string get_basename(const std::string& path) {
 
 // Helper function to get the number of audio channels from a file using ffprobe
 int get_audio_channel_count(const std::string& filename, FILE* log_file) {
+    // Construct command with extra quotes for safety
     std::string command = std::string(FFPROBE_PATH) + " -v error -select_streams a:0 -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 \"" + filename + "\"";
     int channels = 0;
 
@@ -318,11 +358,20 @@ int get_audio_channel_count(const std::string& filename, FILE* log_file) {
     si.dwFlags |= STARTF_USESTDHANDLES;
     ZeroMemory(&pi, sizeof(pi));
 
-    std::vector<char> cmd_line(command.begin(), command.end());
+    // Construct the command string properly for CreateProcessA
+    std::string full_command = std::string(FFPROBE_PATH) + " -v error -select_streams a:0 -show_entries stream=channels -of default=noprint_wrappers=1:nokey=1 \"" + filename + "\"";
+    
+    // Log the command and working directory
+    FILE* debug_log = fopen("debug_probe.log", "a");
+    fprintf(debug_log, "Probing file: %s, Exists: %s\n", filename.c_str(), (_access(filename.c_str(), 0) == 0) ? "yes" : "no");
+    fprintf(debug_log, "Full command: %s\n", full_command.c_str());
+    fclose(debug_log);
+
+    std::vector<char> cmd_line(full_command.begin(), full_command.end());
     cmd_line.push_back('\0');
 
     if (!CreateProcessA(NULL, cmd_line.data(), NULL, NULL, TRUE, 0, NULL, NULL, &si, &pi)) {
-        fprintf(log_file, "  ffprobe CreateProcess failed (%ld).\n", GetLastError());
+        fprintf(log_file, "  ffprobe CreateProcess failed (%ld). Command: %s\n", GetLastError(), full_command.c_str());
         CloseHandle(hRead);
         CloseHandle(hWrite);
         return 2; // Fallback
@@ -341,7 +390,7 @@ int get_audio_channel_count(const std::string& filename, FILE* log_file) {
     try {
         if (!output.empty()) {
             channels = std::stoi(output);
-        }
+        } else if (log_file) { fprintf(log_file, "  ffprobe returned no output for channel count on '%s'.\n", filename.c_str()); }
     } catch (const std::exception& e) {
         fprintf(log_file, "  ffprobe failed to parse channel count for '%s'. Output: %s\n", filename.c_str(), output.c_str());
     }
@@ -726,7 +775,7 @@ void run_yolo_process(YoloConfig *config, int seed) {
         // --- MIDI Synthesis (if enabled) ---
         if (!config->midi_path.empty() && !config->sf2_path.empty()) {
             std::string synth_output_file = join_path(config->output_dir, "temp_synth_audio_" + std::to_string(run) + ".wav");
-            std::string synth_cmd = std::string(FLUIDSYNTH_PATH) + " -ni \"" + config->sf2_path + "\" \"" + config->midi_path + "\" -F \"" + synth_output_file + "\" -r 44100";
+            std::string synth_cmd = std::string(FLUIDSYNTH_PATH) + " -ni -F \"" + synth_output_file + "\" -r 44100 \"" + config->sf2_path + "\" \"" + config->midi_path + "\"";
             
             log_current_time(log_file);
             fprintf(log_file, "Run %d: Synthesizing MIDI with SoundFont...\n", run);
@@ -788,10 +837,20 @@ void run_yolo_process(YoloConfig *config, int seed) {
             std::vector<int> audio_stream_indices;
             std::vector<int> video_stream_indices;
 
+            // Helper to check for audio stream (more reliable than just extension)
+            auto has_audio_stream = [&](const std::string& file) {
+                // A simple proxy for now: if channel count > 0, it has audio.
+                // This leverages the existing ffprobe call.
+                return get_audio_channel_count(file, log_file) > 0;
+            };
+
             for (size_t i = 0; i < current_run_inputs.size(); ++i) {
-                audio_stream_indices.push_back(i);
                 if (has_video_stream(current_run_inputs[i], config, log_file)) {
                     video_stream_indices.push_back(i);
+                }
+                // Only add to audio processing if it actually has an audio stream
+                if (has_audio_stream(current_run_inputs[i])) {
+                    audio_stream_indices.push_back(i);
                 }
             }
 
@@ -800,7 +859,8 @@ void run_yolo_process(YoloConfig *config, int seed) {
             log_current_time(log_file);
             fprintf(log_file, "Run %d: Detecting input channel counts for layering...\n", run);
             for (const auto& file : current_run_inputs) {
-                int file_channels = get_audio_channel_count(file, log_file);
+                // We get channel count again, but it should be cached by ffprobe calls.
+                int file_channels = get_audio_channel_count(file, log_file); 
                 fprintf(log_file, "  - '%s': %d channels\n", file.c_str(), file_channels);
                 total_input_channels += file_channels;
             }
@@ -808,22 +868,26 @@ void run_yolo_process(YoloConfig *config, int seed) {
             fflush(log_file);
 
             // Audio chain
-            for (int index : audio_stream_indices) {
-                // Apply tempo modification to each audio input *before* merging
-                // This is crucial for keeping remixed and synthesized audio in sync
-                filter_complex << "[" << index << ":a]atempo=" << config->atempo << "[a" << index << "];";
+            if (!audio_stream_indices.empty()) {
+                for (int index : audio_stream_indices) {
+                    // Apply tempo modification to each audio input *before* merging
+                    // This is crucial for keeping remixed and synthesized audio in sync
+                    filter_complex << "[" << index << ":a]atempo=" << config->atempo << "[a" << index << "];";
+                }
+                for (int index : audio_stream_indices) {
+                    filter_complex << "[a" << index << "]";
+                }
+                filter_complex << "amerge=inputs=" << audio_stream_indices.size() << "[a_merged];";
+                
+                std::string pan_filter = get_pan_filter_string(total_input_channels, config->num_audio_channels);
+                // Tempo is already applied, so we don't apply it again to the merged stream
+                filter_complex << "[a_merged]volume=" << config->volume
+                               << ",bass=gain=" << config->bass
+                               << ",treble=gain=" << config->treble
+                               << "," << pan_filter << "[a_out];";
+            } else {
+                // No audio inputs, so no audio chain.
             }
-            for (int index : audio_stream_indices) {
-                filter_complex << "[a" << index << "]";
-            }
-            filter_complex << "amerge=inputs=" << audio_stream_indices.size() << "[a_merged];";
-            
-            std::string pan_filter = get_pan_filter_string(total_input_channels, config->num_audio_channels);
-            // Tempo is already applied, so we don't apply it again to the merged stream
-            filter_complex << "[a_merged]volume=" << config->volume
-                           << ",bass=gain=" << config->bass
-                           << ",treble=gain=" << config->treble
-                           << "," << pan_filter << "[a_out];";
 
             // Video chain
             if (!video_stream_indices.empty()) {
@@ -852,19 +916,23 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 cmd_str += " -r " + config->video_fps;
             }
 
-            if (has_video_input) {
+            if (!video_stream_indices.empty()) {
                 cmd_str += " -map \"[v_out]\" -q:v " + std::to_string(config->quality);
             }
 
-            cmd_str += " -map \"[a_out]\"";
-
-            // Handle audio options, especially the MP3 channel constraint.
-            if (config->audio_output_extension == "mp3") {
-                // MP3 must be 2 channels, regardless of what the pan filter did.
-                cmd_str += " -q:a " + std::to_string(config->quality) + " -ac 2";
+            if (!audio_stream_indices.empty()) {
+                cmd_str += " -map \"[a_out]\"";
+                // Handle audio options, especially the MP3 channel constraint.
+                if (config->audio_output_extension == "mp3") {
+                    // MP3 must be 2 channels, regardless of what the pan filter did.
+                    cmd_str += " -q:a " + std::to_string(config->quality) + " -ac 2";
+                } else {
+                    // For other formats, use the user-specified channel count.
+                    cmd_str += " -q:a " + std::to_string(config->quality) + " -ac " + std::to_string(config->num_audio_channels);
+                }
             } else {
-                // For other formats, use the user-specified channel count.
-                cmd_str += " -q:a " + std::to_string(config->quality) + " -ac " + std::to_string(config->num_audio_channels);
+                // If there are no audio inputs, we must add -an to prevent ffmpeg from failing
+                cmd_str += " -an";
             }
 
             cmd_str += " -y \"";
@@ -1170,7 +1238,7 @@ void print_help(const char* app_name) {
     std::cout << "  --audio-ext <ext>           Set the output extension for audio files (default: mp3).\n";
     std::cout << "  -r, --runs <int>              Set the number of processing runs.\n";
     std::cout << "  -c, --channels <int>          Set the number of output audio channels.\n";
-    std::cout << "  --starting-run <int>        Set the starting run number (default: 1).\n";
+    std::cout << "  --starting-run, --starting-run-number <int>  Set the starting run number (default: 1).\n";
     std::cout << "  -s, --seed <int>              Set the random seed (0 for random).\n";
     std::cout << "  --sf2 <path>                Path to the SF2 SoundFont file for MIDI synthesis.\n";
     std::cout << "  --output-dir <path>         Set the directory for all output files.\n";
@@ -1228,8 +1296,8 @@ std::vector<std::string> expand_wildcards(const std::string& path_pattern) {
     return files;
 }
 
-int main(int argc, char *argv[]) {
-    YoloConfig config;
+#ifndef TESTING
+int main(int argc, char *argv[]) {    YoloConfig config;
     int seed = 0;
 
     // Print the YOLO ASCII logo using a raw string literal for correctness and clarity.
@@ -1243,8 +1311,10 @@ ___.__. ____ |  |   ____
 )EOF" << std::endl;
 
     // --- Argument Parsing ---
-    for (int i = 1; i < argc; ++i) {
-        std::string arg = argv[i];
+    // If no arguments are provided (other than the app name), go straight to interactive mode.
+    if (argc > 1) {
+        for (int i = 1; i < argc; ++i) {
+            std::string arg = argv[i];
         if (arg == "-h" || arg == "--help" || arg == "man") {
             print_help(argv[0]);
             return 0;
@@ -1314,7 +1384,7 @@ ___.__. ____ |  |   ____
             config.audio_output_extension_is_default = false;
         } else if ((arg == "-c" || arg == "--channels") && i + 1 < argc) {
             config.num_audio_channels = std::stoi(argv[++i]);
-        } else if (arg == "--starting-run" && i + 1 < argc) {
+        } else if ((arg == "--starting-run" || arg == "--starting-run-number") && i + 1 < argc) {
             config.runNumber = std::stoi(argv[++i]);
             config.runNumber_is_default = false;
         } else if ((arg == "-s" || arg == "--seed") && i + 1 < argc) {
@@ -1325,6 +1395,9 @@ ___.__. ____ |  |   ____
             config.sf2_path = argv[++i];
         } else if (arg == "--midi" && i + 1 < argc) {
             config.midi_path = argv[++i];
+        } else if (arg == "--no-midi") {
+            config.midi_path = "disabled"; // Use a special string to indicate disabled
+            config.sf2_path = "disabled";
         } else if (arg[0] == '-') {
             std::cerr << "Warning: Unknown option '" << arg << "' ignored." << std::endl;
         } else {
@@ -1333,11 +1406,12 @@ ___.__. ____ |  |   ____
             for (const auto& file : expanded_files) {
                 if (config.input_files.size() < MAX_FILES) {
                     config.input_files.push_back(file);
-                } else {
+                } else {               
                     std::cerr << "Warning: Maximum number of input files (" << MAX_FILES << ") reached. Ignoring '" << file << "'." << std::endl;
                     break;
                 }
             }
+        }
         }
     }
 
@@ -1346,24 +1420,83 @@ ___.__. ____ |  |   ____
         // No files provided via args, prompt the user
         std::cout << "No input files provided. Please enter one or more file paths." << std::endl;
         std::cout << "Use quotes for paths with spaces (e.g., \"C:\\My Videos\\file 1.mp4\")." << std::endl;
-        std::cout << "Enter an empty line when finished." << std::endl;
+        std::cout << "Enter an empty line when finished, or 'exit' to quit." << std::endl;
+
+        auto split_quoted = [](const std::string& line) -> std::vector<std::string> {
+            std::vector<std::string> tokens;
+            std::string cur;
+            bool in_quotes = false;
+            for (char ch : line) {
+                if (ch == '"') {
+                    in_quotes = !in_quotes;      // toggle quote state
+                    cur += ch;                    // keep the quote for later stripping
+                } else if (std::isspace(static_cast<unsigned char>(ch)) && !in_quotes) {
+                    if (!cur.empty()) {
+                        tokens.push_back(cur);
+                        cur.clear();
+                    }
+                } else {
+                    cur += ch;
+                }
+            }
+            if (!cur.empty()) tokens.push_back(cur);
+            return tokens;
+        };
+
         std::string line;
         while (config.input_files.size() < MAX_FILES) {
             std::cout << "> ";
             std::getline(std::cin, line);
+            if (line == "exit") {
+                std::cout << "Exiting as requested." << std::endl;
+                return 0;
+            }
             if (line.empty()) {
                 break;
             }
 
-            trim_and_unquote(line);
-            std::vector<std::string> expanded_files = expand_wildcards(line);
-            if (expanded_files.empty() || (expanded_files.size() == 1 && expanded_files[0] == line)) {
-                 // If no expansion happened (or no wildcards), treat as a single file.
-                 if (config.input_files.size() < MAX_FILES) config.input_files.push_back(line);
-            } else {
-                for (const auto& file : expanded_files) {
-                    if (config.input_files.size() < MAX_FILES) config.input_files.push_back(file);
-                    else break;
+            for (const std::string& raw_token : split_quoted(line)) {
+                std::string token = raw_token;
+                trim_and_unquote(token);
+
+                if (token == "exit") {
+                    std::cout << "Exiting as requested." << std::endl;
+                    return 0;
+                }
+
+                std::vector<std::string> expanded_files = expand_wildcards(token);
+                if (expanded_files.empty() || (expanded_files.size() == 1 && expanded_files[0] == token)) {
+                    bool already = std::any_of(config.input_files.begin(),
+                                               config.input_files.end(),
+                                               [&](const std::string& existing) {
+                                                   return existing == token;
+                                               });
+                    if (already) {
+                        std::cout << "Argument '" << token
+                                  << "' provided as input filename, but it was already specified.\n";
+                        continue;
+                    }
+                    if (config.input_files.size() < MAX_FILES) {
+                        config.input_files.push_back(token);
+                    }
+                } else {
+                    for (const auto& file : expanded_files) {
+                        bool already = std::any_of(config.input_files.begin(),
+                                                   config.input_files.end(),
+                                                   [&](const std::string& existing) {
+                                                       return existing == file;
+                                                   });
+                        if (already) {
+                            std::cout << "Argument '" << file
+                                      << "' provided as input filename, but it was already specified.\n";
+                            continue;
+                        }
+                        if (config.input_files.size() < MAX_FILES) {
+                            config.input_files.push_back(file);
+                        } else {
+                            break;
+                        }
+                    }
                 }
             }
 
@@ -1377,10 +1510,16 @@ ___.__. ____ |  |   ____
         }
     }
 
-    get_other_config(&config, &seed);
-    run_yolo_process(&config, seed);
+    try {
+        get_other_config(&config, &seed);
+        run_yolo_process(&config, seed);
+    } catch (const UserExitException&) {
+        std::cout << "Exiting as requested." << std::endl;
+        return 0;
+    }
     return 0;
 }
+#endif
 
 // Template implementation must be in the header file.
 template<class F, class... Args>
