@@ -1,6 +1,6 @@
 # yolo
 ---
-beta 1.5
+beta 2.0 coming soon
 ---
 
 yolo aio includes:
