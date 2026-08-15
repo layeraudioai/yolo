@@ -69,13 +69,43 @@ def test_layering():
     output_file = "layered_output_run1.mp4"
     args = [
         "test_media/test_audio.wav", "test_media/test_video.mp4", "--runs", "1", "--seed", "1", "--starting-run", "1",
-        "--output-dir", "test_output", "--layer-files", "--no-hyper-file", "--no-remix", "--no-midi",
+        "--output-dir", "test_output", "--layer-files", "--prioritize-file", "999", "--no-hyper-file", "--no-remix", "--no-midi",
         "--channels", "2", "--audio-ext", "mp3", "--video-ext", "mp4", "-q", "20", "-bb", "0", "-tg", "0", "-l", "-23", "-t", "1.0",
         "-bt", "0", "-ct", "1", "-st", "1", "--video-res", "320x240", "--video-fps", "30"
     ]
     if not run_yolo_command(args, test_name): return False
     if not check_output_file(os.path.join("test_output", output_file)): return False
     return True
+
+def test_layering_with_prioritization():
+    """Scenario 4b: Layering Mode with Prioritization"""
+    test_name = "test_layering_with_prioritization"
+    output_file = "layered_output_run1.mp4"
+    args = [
+        "test_media/test_audio.wav", "test_media/test_video.mp4", "--runs", "1", "--seed", "1", "--starting-run", "1",
+        "--output-dir", "test_output", "--layer-files", "--no-hyper-file", "--no-remix", "--no-midi",
+        "--prioritize-file", "1",
+        "--channels", "2", "--audio-ext", "mp3", "--video-ext", "mp4", "-q", "20", "-bb", "0", "-tg", "0", "-l", "-23", "-t", "1.0",
+        "-bt", "0", "-ct", "1", "-st", "1", "--video-res", "320x240", "--video-fps", "30"
+    ]
+    if not run_yolo_command(args, test_name): return False # Check the return value
+    if not check_output_file(os.path.join("test_output", output_file)): return False
+    return True
+
+def test_prioritize_file_invalid_index():
+    """Scenario 4c: Negative test for prioritization"""
+    test_name = "test_prioritize_file_invalid_index"
+    args = [
+        "test_media/test_audio.wav", "test_media/test_video.mp4", "--layer-files", "--prioritize-file", "999"
+    ]
+    # Expecting failure or at least graceful handling
+    # The application should exit with an error code if the index is invalid.
+    # We expect run_yolo_command to return False (failure).
+    try:
+        subprocess.run([YOLO_EXE] + args, check=True, capture_output=True, text=True)
+        return False # Should have failed
+    except subprocess.CalledProcessError:
+        return True # Correctly failed
 
 def test_remixing():
     """Scenario 5: Remixing Mode"""
@@ -99,7 +129,7 @@ def test_hyper_file():
         "--no-layer-files", "--hyper-filename", hyper_file, "--no-remix", "--no-midi",
         "--channels", "2", "--audio-ext", "mp3", "-q", "5", "-bb", "0", "-tg", "0", "-l", "-23", "-t", "1.0"
     ]
-    if not run_yolo_command(args, test_name, stdin_input="master_mix.mp3\n"): return False
+    if not run_yolo_command(args, test_name): return False
     if not check_output_file(hyper_file): return False
     return True
 
@@ -144,7 +174,6 @@ def test_missing_arg_value():
         return False
     return True
 
-
 def test_fully_interactive_mode_no_args():
     """Scenario 1: Fully Interactive Mode (No CLI args)"""
     test_name = "test_fully_interactive_mode_no_args"
@@ -156,6 +185,7 @@ def test_fully_interactive_mode_no_args():
         "test_media/test_audio.wav\n"  # Input file prompt
         "\n"                           # Empty line to finish file input
         "n\n"                          # Generate layered files?
+        "-1\n"                          # Prioritize file index
         "n\n"                          # Create a hyper file?
         "n\n"                          # Enable remixing?
         "0\n"                          # Bass boost
@@ -183,6 +213,8 @@ ALL_TESTS = [
     test_single_audio_file,
     test_single_video_file,
     test_layering,
+    test_layering_with_prioritization,
+    test_prioritize_file_invalid_index,
     test_remixing,
     test_hyper_file,
     test_help_flag,

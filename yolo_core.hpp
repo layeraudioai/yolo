@@ -22,15 +22,16 @@
 #include <iostream>
 #include <filesystem>
 #include <sys/stat.h> // For mkdir
+#include <glob.h> // For glob() on POSIX
 #define MAX_PROCESSES (MAX_FILES * 10)
 
-#ifdef _WIN32// Define the path to ffmpeg.exe. This is more robust than relying on PATH.
+#ifdef _WIN32
+// Define the path to ffmpeg.exe. This is more robust than relying on PATH.
 #include <direct.h> // For _mkdir
 #define MKDIR(path) std::filesystem::create_directories(path)
 const char* FFMPEG_PATH = "ffmpeg";
 const char* FFPROBE_PATH = "ffprobe";
 const char* FLUIDSYNTH_PATH = "fluidsynth";
-#include <glob.h> // For glob() on POSIX
 #include <windows.h>
 typedef HANDLE ProcessHandle;
 #else
@@ -72,7 +73,7 @@ struct YoloConfig {
         bass(0.0f),
         treble(0.0f),
         quality(-1),
-        video_output_extension("mkv"),
+        video_output_extension("mp2"),
         video_res(),
         width(7680),
         height(4320),
@@ -84,6 +85,8 @@ struct YoloConfig {
         runNumber(1),
         num_runs(-1),
         num_audio_channels(-1),
+        priority_file_index(-1),
+        interactive(false),
         output_dir()
     {}
 
@@ -125,6 +128,8 @@ struct YoloConfig {
     int runNumber;
     int num_runs;
     int num_audio_channels;
+    int priority_file_index;
+    bool interactive;
     std::string output_dir;
 
 

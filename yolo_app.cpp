@@ -828,6 +828,11 @@ void run_yolo_process(YoloConfig *config, int seed) {
                 }
             }
 
+             if (config->priority_file_index >= 0 && (size_t)config->priority_file_index < current_run_inputs.size()) {
+                std::string prioritized = current_run_inputs[config->priority_file_index];
+                current_run_inputs.erase(current_run_inputs.begin() + config->priority_file_index);
+                current_run_inputs.insert(current_run_inputs.begin(), prioritized);
+            }
             for (const auto& file : current_run_inputs) {
                 input_str += "-i \"" + file + "\" ";
             }
@@ -977,10 +982,12 @@ void run_yolo_process(YoloConfig *config, int seed) {
 #endif
         } else {
             // --- Original per-file logic ---
+            std::string remixed_video_file; // To hold the path to remixed video if it exists
             for (size_t file_idx = 0; file_idx < config->input_files.size(); file_idx++) {
                 std::string current_input_file = config->input_files[file_idx];
-
+                remixed_video_file.clear();
                 if (config->remix_enabled == 'y') {
+                    bool is_video_remix = has_video_stream(current_input_file, config, log_file);
                     std::string temp_audio_name = join_path(config->output_dir, "temp_remix_audio_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".wav");
                     std::string temp_video_name = join_path(config->output_dir, "temp_remix_video_" + std::to_string(run) + "_" + std::to_string(file_idx) + ".mkv");
                     
@@ -988,9 +995,10 @@ void run_yolo_process(YoloConfig *config, int seed) {
                     if (media.success) {
                         current_input_file = media.audio_file;
                         temp_files_to_delete.push_back(media.audio_file);
-                        // In per-file mode, if video was shuffled, we need to replace the video source as well.
-                        // This is tricky. The simplest way is to use the shuffled video as a second input and map it.
-                        // For now, we'll focus on the audio part which is what current_input_file tracks.
+                        if (is_video_remix && !media.video_file.empty()) {
+                            remixed_video_file = media.video_file;
+                            temp_files_to_delete.push_back(remixed_video_file);
+                        }
                     }
                 }
 
@@ -1030,35 +1038,49 @@ void run_yolo_process(YoloConfig *config, int seed) {
                              config->contrast,
                              config->saturation);
 
+                    std::string input_spec = "-i \"" + current_input_file + "\"";
+                    if (!remixed_video_file.empty()) {
+                        // If we have a remixed video, use it as a second input
+                        input_spec += " -i \"" + remixed_video_file + "\"";
+                    }
+
                     std::string audio_codec_str;
-                    if (config->num_audio_channels > 2) {
-                        if (config->num_audio_channels <= 8) {
-                            audio_codec_str = " -c:a flac"; // Use FLAC for up to 7.1 surround
-                        } else {
-                            audio_codec_str = " -c:a pcm_s24le"; // Use PCM for high channel counts
-                        }
+                    if (output_ext == "mp4" || output_ext == "mov") {
+                        audio_codec_str = " -c:a aac -b:a 256k";
+                    } else if (config->num_audio_channels > 2) {
+                        audio_codec_str = " -c:a flac";
                     } else {
                         audio_codec_str = " -q:a " + std::to_string(config->quality); // Use quality for stereo/mono
                     }
 
+                    cmd_str = std::string(FFMPEG_PATH) + " " + input_spec;
+
+                    if (!remixed_video_file.empty()) {
+                        // Map audio from first input, video from second
+                        cmd_str += " -filter_complex \"[0:a]" + std::string(filter_complex_a) + "[aout];[1:v]" + std::string(filter_complex_v) + "[vout]\" -map \"[vout]\" -map \"[aout]\"";
+                    } else {
+                        // Standard case with one input
+                        cmd_str += " -filter_complex:a \"" + std::string(filter_complex_a) + "\"";
+                        cmd_str += " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
+                    }
                     if (config->create_hyper_file=='y') { 
                         std::cout << "Using: " << config->hyper_file_name << std::endl;
                         cmd_str = std::string(FFMPEG_PATH) + " -i \"" + current_input_file + "\"" +
-                              " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
-                              " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
-                              cmd_str += " -q:v " + std::to_string(config->quality) +
-                              // Add video options if resolution or framerate are specified
-                              (!config->video_res.empty() ? " -s " + config->video_res : "") +
-                              (!config->video_fps.empty() ? " -r " + config->video_fps : "") +
-                              audio_codec_str +
-                              " -ac " + std::to_string(config->num_audio_channels) + " -y \"" + output_filename + "\"" + 
-                              " -y \"" + output_filename + "\" \"" + config->hyper_file_name + "\""; }
+                          " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
+                          " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
+                        cmd_str += " -q:v " + std::to_string(config->quality) +
+                          // Add video options if resolution or framerate are specified
+                          (!config->video_res.empty() ? " -s " + config->video_res : "") +
+                          (!config->video_fps.empty() ? " -r " + config->video_fps : "") +
+                          audio_codec_str +
+                            " -ac " + std::to_string(config->num_audio_channels) + " -y \"" + output_filename + "\"" + 
+                            " -y \"" + output_filename + "\" \"" + config->hyper_file_name + "\""; }
                     else { 
                         std::cout << "Using: " << config->hyper_file_name << std::endl;
                         cmd_str = std::string(FFMPEG_PATH) + " -i \"" + current_input_file + "\"" +
                               " -filter_complex:a \"" + std::string(filter_complex_a) + "\"" +
                               " -filter_complex:v \"" + std::string(filter_complex_v) + "\"";
-                              cmd_str += " -q:v " + std::to_string(config->quality) +
+                    cmd_str += " -q:v " + std::to_string(config->quality) +
                               // Add video options if resolution or framerate are specified
                               (!config->video_res.empty() ? " -s " + config->video_res : "") +
                               (!config->video_fps.empty() ? " -r " + config->video_fps : "") +
@@ -1082,13 +1104,9 @@ void run_yolo_process(YoloConfig *config, int seed) {
                         audio_opts_str = " -q:a " + std::to_string(config->quality) +
                                          " -ac " + std::to_string(config->num_audio_channels);
                     }
-                    if (config->create_hyper_file=='y') { cmd_str = std::string(FFMPEG_PATH) + " -i \"" +
-                              current_input_file + "\"" + " -af \"" +
-                              std::string(filter_complex_a) + "\"" + audio_opts_str + " -y \"" + output_filename +
-                              "\" \"" + config->hyper_file_name + "\""; }
-                    else { cmd_str = std::string(FFMPEG_PATH) + " -i \"" + current_input_file + "\"" +
-                              " -af \"" + std::string(filter_complex_a) + "\"" +
-                              audio_opts_str + " -y \"" + output_filename + "\""; }
+                    cmd_str = std::string(FFMPEG_PATH) + " -i \"" + current_input_file + "\"" +
+                          " -af \"" + std::string(filter_complex_a) + "\"" +
+                          audio_opts_str + " -y \"" + output_filename + "\"";
                 }
 
                 log_current_time(log_file);
@@ -1225,6 +1243,7 @@ void print_help(const char* app_name) {
     std::cout << "  --no-hyper-file             Do not create a concatenated hyper file.\n";
     std::cout << "  --hyper-file_name <path>     Set the output name for the hyper file.\n";
     std::cout << "  -bt, --brightness-target <f>  Set the target brightness (float).\n";
+    std::cout << "  --prioritize-file <index>   In layer mode, prioritize a file (0-indexed) by making it the base layer.\n";
     std::cout << "  -ct, --contrast-target <f>    Set the target contrast (float).\n";
     std::cout << "  -st, --saturation-target <f>  Set the target saturation (float).\n";
     std::cout << "  -bb, --bass-boost <f>         Set the bass boost gain (float).\n";
@@ -1284,7 +1303,11 @@ std::vector<std::string> expand_wildcards(const std::string& path_pattern) {
     glob_t glob_result;
     memset(&glob_result, 0, sizeof(glob_result));
 
+#ifdef GLOB_TILDE
     int return_value = glob(path_pattern.c_str(), GLOB_TILDE, NULL, &glob_result);
+#else
+    int return_value = glob(path_pattern.c_str(), 0, NULL, &glob_result);
+#endif
     if (return_value == 0) {
         for (size_t i = 0; i < glob_result.gl_pathc; ++i) {
             files.push_back(std::string(glob_result.gl_pathv[i]));
@@ -1324,20 +1347,35 @@ ___.__. ____ |  |   ____
             config.remix_enabled = 'y';
         } else if (arg == "--no-remix") {
             config.remix_enabled = 'n';
-        } else if (arg == "--remix-intensity" && i + 1 < argc) {
-            config.remix_intensity = std::stof(argv[++i]);
-        } else if (arg == "--remix-seed" && i + 1 < argc) {
-            config.remix_seed = std::stoi(argv[++i]); // This will now correctly handle 0
+        } else if (arg == "--remix-intensity") {
+            if (i + 1 < argc) {
+                config.remix_intensity = std::stof(argv[++i]);
+            } else {
+                std::cerr << "Error: Option '" << arg << "' requires an argument.\n";
+                return 1;
+            }
+        } else if (arg == "--remix-seed") {
+            if (i + 1 < argc) {
+                config.remix_seed = std::stoi(argv[++i]); // This will now correctly handle 0
+            } else {
+                std::cerr << "Error: Option '" << arg << "' requires an argument.\n";
+                return 1;
+            }
         } else if (arg == "--no-layer-files") {
             config.layer_files = 'n';
         } else if (arg == "--create-hyper-file") {
             config.create_hyper_file = 'y';
         } else if (arg == "--no-hyper-file") {
             config.create_hyper_file = 'n';
-        } else if ((arg == "--hyper-filename" || arg == "--hyper") && i + 1 < argc) {
-            config.hyper_file_name = argv[++i];
-            config.create_hyper_file = 'y';
-        } else if ((arg == "-r" || arg == "--runs")) {
+        } else if (arg == "--hyper-filename" || arg == "--hyper") {
+            if (i + 1 < argc) {
+                config.hyper_file_name = argv[++i];
+                config.create_hyper_file = 'y';
+            } else {
+                std::cerr << "Error: Option '" << arg << "' requires an argument.\n";
+                return 1;
+            }
+        } else if (arg == "-r" || arg == "--runs") {
             if (i + 1 < argc) {
                 // Handle empty string argument for --runs
                 if (strlen(argv[i+1]) == 0) {
@@ -1398,6 +1436,10 @@ ___.__. ____ |  |   ____
         } else if (arg == "--no-midi") {
             config.midi_path = "disabled"; // Use a special string to indicate disabled
             config.sf2_path = "disabled";
+        } else if (arg == "--prioritize-file" && i + 1 < argc) {
+            config.priority_file_index = std::stoi(argv[++i]);
+        } else if (arg ==  "--no-priority") {
+            config.priority_file_index = -1;
         } else if (arg[0] == '-') {
             std::cerr << "Warning: Unknown option '" << arg << "' ignored." << std::endl;
         } else {
