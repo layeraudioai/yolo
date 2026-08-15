@@ -1,3 +1,6 @@
 cmake -B build
-cmake --build build --config Release
-copy build\Release\yolo.exe .
+cd build
+make clean -j69
+make -j42069
+copy yolo.exe ..
+cd ..
